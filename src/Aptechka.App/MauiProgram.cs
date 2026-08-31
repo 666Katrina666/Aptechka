@@ -1,6 +1,10 @@
 using Aptechka.App.ViewModels;
+using Aptechka.App.Services;
 using Aptechka.Application.Inventory;
+using Aptechka.Application.Sync;
+using Aptechka.Infrastructure.GitHub;
 using Aptechka.Infrastructure.Storage;
+using Aptechka.Infrastructure.Sync;
 using Microsoft.Extensions.Logging;
 
 namespace Aptechka.App;
@@ -24,12 +28,26 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<IClock, SystemClock>();
         builder.Services.AddSingleton<IIdGenerator, UlidIdGenerator>();
-        builder.Services.AddSingleton<IInventoryRepository>(services =>
+        builder.Services.AddSingleton(services =>
             new FileInventoryRepository(
                 Path.Combine(FileSystem.AppDataDirectory, "data"),
                 services.GetRequiredService<IClock>(),
                 services.GetRequiredService<IIdGenerator>()));
+        builder.Services.AddSingleton<IInventoryRepository>(services =>
+            services.GetRequiredService<FileInventoryRepository>());
+        builder.Services.AddSingleton<IDataSnapshotStore>(services =>
+            services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<InventoryService>();
+        builder.Services.AddSingleton(new HttpClient
+        {
+            BaseAddress = new Uri("https://api.github.com/"),
+            Timeout = TimeSpan.FromSeconds(30),
+        });
+        builder.Services.AddSingleton<GitHubDataClient>();
+        builder.Services.AddSingleton(new SyncStateStore(
+            Path.Combine(FileSystem.AppDataDirectory, "sync", "state.json")));
+        builder.Services.AddSingleton<ISyncService, GitHubSyncService>();
+        builder.Services.AddSingleton<ISecureTokenStore, MauiSecureTokenStore>();
         builder.Services.AddSingleton<MainViewModel>();
         builder.Services.AddSingleton<MainPage>();
 

@@ -52,6 +52,39 @@
 
             <Button Command="{Binding SaveCommand}" Text="Сохранить локально" />
 
+            <BoxView HeightRequest="1" Margin="0,8" Color="{StaticResource Gray300}" />
+
+            <Label FontAttributes="Bold" FontSize="22" Text="GitHub-синхронизация" />
+            <Label
+                Text="На новом устройстве сначала введи токен и синхронизируй пустую карточку. Затем сохрани позицию локально и синхронизируй ещё раз."
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                <VerticalStackLayout Grid.Column="0" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Владелец" />
+                    <Entry Text="{Binding Owner}" />
+                </VerticalStackLayout>
+                <VerticalStackLayout Grid.Column="1" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Репозиторий" />
+                    <Entry Text="{Binding Repository}" />
+                </VerticalStackLayout>
+            </Grid>
+
+            <Label Style="{StaticResource Body}" Text="Ветка" />
+            <Entry Text="{Binding Branch}" />
+
+            <Label Style="{StaticResource Body}" Text="GitHub token" />
+            <Entry
+                IsPassword="True"
+                Placeholder="github_pat_..."
+                Text="{Binding TokenInput}" />
+            <Label
+                FontSize="12"
+                Text="{Binding TokenStatus}"
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+            <Button Command="{Binding SyncCommand}" Text="Синхронизировать" />
+
             <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
             <Label
                 LineBreakMode="WordWrap"

@@ -31,6 +31,20 @@ Aptechka — локальная домашняя аптечка для Windows �
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Модель данных](docs/DATA_MODEL.md)
 - [Контракт синхронизации](docs/SYNC.md)
+- [Проверка P1 на Windows и Android](docs/P1_TESTING.md)
+
+### Разработка
+
+```powershell
+dotnet test tests/Aptechka.Domain.Tests/Aptechka.Domain.Tests.csproj
+dotnet test tests/Aptechka.Application.Tests/Aptechka.Application.Tests.csproj --filter "Category!=Integration"
+dotnet build src/Aptechka.App/Aptechka.App.csproj -f net9.0-windows10.0.19041.0
+$aptechkaAndroidSdk = '<path-to-android-sdk>'
+$aptechkaJavaSdk = '<path-to-jdk-17>'
+dotnet build src/Aptechka.App/Aptechka.App.csproj -f net9.0-android `
+  -p:AndroidSdkDirectory="$aptechkaAndroidSdk" `
+  -p:JavaSdkDirectory="$aptechkaJavaSdk"
+```
 
 ## English
 
@@ -64,3 +78,10 @@ storage locations, automated diagnosis, and automated medical advice.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data model](docs/DATA_MODEL.md)
 - [Synchronization contract](docs/SYNC.md)
+- [P1 verification on Windows and Android](docs/P1_TESTING.md)
+
+### Development
+
+The solution is pinned to .NET SDK 9.0.200. Unit tests cover domain rules, JSON
+storage, and the safe snapshot planner. GitHub integration tests are opt-in and
+require process-local environment variables; credentials are never committed.
