@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.MainPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:MainViewModel"
+    Title="Аптечка">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24" Spacing="16" MaximumWidthRequest="720">
+            <Label
+                FontAttributes="Bold"
+                FontSize="28"
+                Text="Первая позиция аптечки" />
+
+            <Label
+                Text="P1 проверяет одну карточку, локальный JSON и путь синхронизации между Windows и Android."
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+            <Label Style="{StaticResource Body}" Text="Название" />
+            <Entry Placeholder="Например, Ибупрофен" Text="{Binding Name}" />
+
+            <Label Style="{StaticResource Body}" Text="Категория" />
+            <Picker ItemsSource="{Binding CategoryOptions}" SelectedItem="{Binding SelectedCategory}" />
+
+            <Label Style="{StaticResource Body}" Text="Действующие вещества через запятую" />
+            <Entry Placeholder="ибупрофен" Text="{Binding ActiveIngredients}" />
+
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                <VerticalStackLayout Grid.Column="0" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Форма" />
+                    <Entry Placeholder="таблетки" Text="{Binding Form}" />
+                </VerticalStackLayout>
+                <VerticalStackLayout Grid.Column="1" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Дозировка" />
+                    <Entry Placeholder="200 мг" Text="{Binding Strength}" />
+                </VerticalStackLayout>
+            </Grid>
+
+            <Label Style="{StaticResource Body}" Text="Описание" />
+            <Editor
+                AutoSize="TextChanges"
+                MinimumHeightRequest="88"
+                Placeholder="Короткая личная заметка"
+                Text="{Binding Description}" />
+
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <Label Grid.Column="0" VerticalOptions="Center" Text="Всегда иметь дома" />
+                <Switch Grid.Column="1" IsToggled="{Binding KeepInStock}" />
+            </Grid>
+
+            <Button Command="{Binding SaveCommand}" Text="Сохранить локально" />
+
+            <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
+            <Label
+                LineBreakMode="WordWrap"
+                Text="{Binding Status}"
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>
