@@ -23,6 +23,10 @@ public sealed class SnapshotMergeEngine
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(remote);
 
+        SnapshotMergeIdentities.RequireManifest(@base, "базовом");
+        SnapshotMergeIdentities.RequireManifest(local, "локальном");
+        SnapshotMergeIdentities.RequireManifest(remote, "удалённом");
+
         var paths = @base.Files.Keys
             .Concat(local.Files.Keys)
             .Concat(remote.Files.Keys)
@@ -47,6 +51,12 @@ public sealed class SnapshotMergeEngine
             return new SnapshotMergeResult(null, conflicts);
         }
 
+        if (!merged.ContainsKey(SnapshotMergeIdentities.ManifestPath))
+        {
+            throw new InvalidDataException(
+                $"В объединённом снимке отсутствует {SnapshotMergeIdentities.ManifestPath}.");
+        }
+
         return new SnapshotMergeResult(new DataSnapshot(merged), []);
     }
 
@@ -59,6 +69,18 @@ public sealed class SnapshotMergeEngine
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
+        if (path.Equals(SnapshotMergeIdentities.ManifestPath, StringComparison.Ordinal))
+        {
+            MergeManifest(path, baseBytes, localBytes, remoteBytes, merged, conflicts);
+            return;
+        }
+
+        if (IsEntityPath(path, "packages/", out _))
+        {
+            MergePackage(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
+            return;
+        }
+
         if (localBytes is null && remoteBytes is null)
         {
             return;
@@ -71,21 +93,9 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
-        if (path.Equals("aptechka.json", StringComparison.Ordinal))
-        {
-            MergeManifest(path, baseBytes, localBytes, remoteBytes, merged, conflicts);
-            return;
-        }
-
         if (IsEntityPath(path, "items/", out _))
         {
             MergeItem(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
-            return;
-        }
-
-        if (IsEntityPath(path, "packages/", out _))
-        {
-            MergePackage(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
             return;
         }
 
@@ -106,20 +116,51 @@ public sealed class SnapshotMergeEngine
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
-        var baseManifest = ReadManifest(path, baseBytes);
-        var localManifest = ReadManifest(path, localBytes);
-        var remoteManifest = ReadManifest(path, remoteBytes);
+        if (baseBytes is null)
+        {
+            throw new InvalidDataException($"В базовом снимке отсутствует {path}.");
+        }
 
-        if (localManifest is not null &&
-            remoteManifest is not null &&
-            !string.Equals(localManifest.DatasetId, remoteManifest.DatasetId, StringComparison.Ordinal))
+        if (localBytes is null)
+        {
+            throw new InvalidDataException($"В локальном снимке отсутствует {path}.");
+        }
+
+        if (remoteBytes is null)
+        {
+            throw new InvalidDataException($"В удалённом снимке отсутствует {path}.");
+        }
+
+        var baseManifest = SnapshotMergeIdentities.ReadManifest(path, baseBytes);
+        var localManifest = SnapshotMergeIdentities.ReadManifest(path, localBytes);
+        var remoteManifest = SnapshotMergeIdentities.ReadManifest(path, remoteBytes);
+
+        if (!string.Equals(localManifest.DatasetId, baseManifest.DatasetId, StringComparison.Ordinal) ||
+            !string.Equals(remoteManifest.DatasetId, baseManifest.DatasetId, StringComparison.Ordinal))
         {
             conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, baseBytes, localBytes, remoteBytes));
             return;
         }
 
-        MergeOpaqueFile(path, baseBytes, localBytes, remoteBytes, merged, conflicts);
-        _ = baseManifest;
+        if (JsonEquals(path, localBytes, remoteBytes))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        if (JsonEquals(path, localBytes, baseBytes))
+        {
+            Accept(merged, path, remoteBytes);
+            return;
+        }
+
+        if (JsonEquals(path, remoteBytes, baseBytes))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, baseBytes, localBytes, remoteBytes));
     }
 
     private static void MergeItem(
@@ -245,6 +286,12 @@ public sealed class SnapshotMergeEngine
         var @base = ReadPackage(path, baseBytes);
         var local = ReadPackage(path, localBytes);
         var remote = ReadPackage(path, remoteBytes);
+
+        if (@base is not null)
+        {
+            SnapshotMergeIdentities.EnsurePackageItemIdImmutable(path, @base, local, remote);
+        }
+
         if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, merged, conflicts))
         {
             return;
@@ -252,6 +299,12 @@ public sealed class SnapshotMergeEngine
 
         if (@base is null)
         {
+            if (JsonEquals(path, localBytes, remoteBytes))
+            {
+                Accept(merged, path, localBytes);
+                return;
+            }
+
             conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, null, localBytes, remoteBytes));
             return;
         }
@@ -274,32 +327,20 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
-        if (!string.Equals(local!.ItemId, remote!.ItemId, StringComparison.Ordinal))
-        {
-            conflicts.Add(FieldConflict(
-                path,
-                "itemId",
-                SyncConflictKind.FieldChangedBoth,
-                @base.ItemId,
-                local.ItemId,
-                remote.ItemId));
-            return;
-        }
-
-        if (IsDeleted(local) != IsDeleted(remote))
+        if (IsDeleted(local!) != IsDeleted(remote!))
         {
             conflicts.Add(FieldConflict(
                 path,
                 "deletedAt",
                 SyncConflictKind.DeleteVsModify,
                 @base.DeletedAt,
-                local.DeletedAt,
-                remote.DeletedAt));
+                local!.DeletedAt,
+                remote!.DeletedAt));
             return;
         }
 
         var fieldConflicts = new List<SyncConflict>();
-        var label = MergeScalar(path, "label", @base.Label, local.Label, remote.Label, fieldConflicts);
+        var label = MergeScalar(path, "label", @base.Label, local!.Label, remote!.Label, fieldConflicts);
         var expiration = MergeScalar(
             path,
             "expiration",
@@ -343,7 +384,7 @@ public sealed class SnapshotMergeEngine
             Earlier(@base.CreatedAt, local.CreatedAt, remote.CreatedAt),
             mergedAt,
             deletedAt,
-            local.ItemId,
+            @base.ItemId,
             label,
             expiration.Date,
             expiration.Precision,
@@ -682,9 +723,9 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
-        if (path.Equals("aptechka.json", StringComparison.Ordinal))
+        if (path.Equals(SnapshotMergeIdentities.ManifestPath, StringComparison.Ordinal))
         {
-            ReadManifest(path, content);
+            SnapshotMergeIdentities.ReadManifest(path, content);
             return;
         }
 
@@ -713,38 +754,6 @@ public sealed class SnapshotMergeEngine
         catch (JsonException exception)
         {
             throw new InvalidDataException($"Некорректный JSON: {path}", exception);
-        }
-    }
-
-    private static DatasetManifest? ReadManifest(string path, byte[]? bytes)
-    {
-        if (bytes is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            var manifest = JsonSerializer.Deserialize<DatasetManifest>(bytes, AptechkaJson.Options)
-                ?? throw new InvalidDataException($"Файл данных пуст: {path}");
-            manifest.EnsureCompatible();
-            return manifest;
-        }
-        catch (InvalidDataException)
-        {
-            throw;
-        }
-        catch (JsonException exception)
-        {
-            throw new InvalidDataException($"Некорректный JSON: {path}", exception);
-        }
-        catch (NotSupportedException exception)
-        {
-            throw new InvalidDataException($"Некорректный JSON: {path}", exception);
-        }
-        catch (InvalidOperationException exception)
-        {
-            throw new InvalidDataException($"Несовместимый манифест: {path}", exception);
         }
     }
 

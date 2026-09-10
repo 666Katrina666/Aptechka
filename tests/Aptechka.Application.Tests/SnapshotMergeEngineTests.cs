@@ -517,6 +517,170 @@ public sealed class SnapshotMergeEngineTests
         Assert.Null(result.MergedSnapshot);
     }
 
+    [Fact]
+    public void Merge_ThrowsWhenLocalChangesExistingPackageItemId()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var other = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var package = Package(PackageId, ItemId);
+        var local = package with { ItemId = SecondItemId, Revision = 2, UpdatedAt = T1 };
+        local.EnsureValid();
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item), File(other), File(package)),
+                Snap(File(Manifest()), File(item), File(other), File(local)),
+                Snap(File(Manifest()), File(item), File(other), File(package))));
+
+        Assert.Contains(PackagePath(PackageId), exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(SecondItemId, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenRemoteChangesExistingPackageItemId()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var other = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var package = Package(PackageId, ItemId);
+        var remote = package with { ItemId = SecondItemId, Revision = 2, UpdatedAt = T1 };
+        remote.EnsureValid();
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item), File(other), File(package)),
+                Snap(File(Manifest()), File(item), File(other), File(package)),
+                Snap(File(Manifest()), File(item), File(other), File(remote))));
+
+        Assert.Contains(PackagePath(PackageId), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenBothSidesChangeExistingPackageItemIdIdentically()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var other = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var package = Package(PackageId, ItemId);
+        var changed = package with { ItemId = SecondItemId, Revision = 2, UpdatedAt = T1 };
+        changed.EnsureValid();
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item), File(other), File(package)),
+                Snap(File(Manifest()), File(item), File(other), File(changed)),
+                Snap(File(Manifest()), File(item), File(other), File(changed))));
+
+        Assert.Contains(PackagePath(PackageId), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenLocalDeletesManifest()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item)),
+                Snap(File(item)),
+                Snap(File(Manifest()), File(item))));
+
+        Assert.Contains("aptechka.json", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenRemoteDeletesManifest()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item)),
+                Snap(File(Manifest()), File(item)),
+                Snap(File(item))));
+
+        Assert.Contains("aptechka.json", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenBothSidesDeleteManifest()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(item)),
+                Snap(File(item)),
+                Snap(File(item))));
+
+        Assert.Contains("aptechka.json", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenLocalChangesDatasetId()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localManifest = new DatasetManifest(DatasetManifest.CurrentSchemaVersion, SecondItemId, T0);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(item)),
+            Snap(File(localManifest), File(item)),
+            Snap(File(Manifest()), File(item)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.FileChangedBoth, conflict.Kind);
+        Assert.Equal("aptechka.json", conflict.Path);
+        Assert.Null(result.MergedSnapshot);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenRemoteChangesDatasetId()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var remoteManifest = new DatasetManifest(DatasetManifest.CurrentSchemaVersion, SecondItemId, T0);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(item)),
+            Snap(File(Manifest()), File(item)),
+            Snap(File(remoteManifest), File(item)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.FileChangedBoth, conflict.Kind);
+        Assert.Equal("aptechka.json", conflict.Path);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenBothSidesChangeDatasetIdIdentically()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var changed = new DatasetManifest(DatasetManifest.CurrentSchemaVersion, SecondItemId, T0);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(item)),
+            Snap(File(changed), File(item)),
+            Snap(File(changed), File(item)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.FileChangedBoth, conflict.Kind);
+        Assert.Equal("aptechka.json", conflict.Path);
+        Assert.Null(result.MergedSnapshot);
+    }
+
+    [Fact]
+    public void Merge_AcceptsUnchangedIdenticalManifest()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var updated = item.Update(T1, "Нурофен", item.Aliases, item.Category, item.ActiveIngredients, item.Form, item.Strength, item.Description, item.KeepInStock);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(item)),
+            Snap(File(Manifest()), File(updated)),
+            Snap(File(Manifest()), File(item)));
+
+        Assert.False(result.HasConflicts);
+        Assert.NotNull(result.MergedSnapshot);
+        Assert.True(result.MergedSnapshot.Files.ContainsKey("aptechka.json"));
+        var manifest = JsonSerializer.Deserialize<DatasetManifest>(
+            result.MergedSnapshot.Files["aptechka.json"],
+            AptechkaJson.Options)!;
+        Assert.Equal(DatasetId, manifest.DatasetId);
+    }
+
     private SnapshotMergeResult Merge(DataSnapshot @base, DataSnapshot local, DataSnapshot remote) =>
         engine.Merge(@base, local, remote, MergedAt);
 
