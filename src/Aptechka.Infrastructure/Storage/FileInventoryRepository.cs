@@ -9,11 +9,12 @@ namespace Aptechka.Infrastructure.Storage;
 public sealed class FileInventoryRepository(
     string rootPath,
     IClock clock,
-    IIdGenerator idGenerator) : IInventoryRepository, IDataSnapshotStore
+    IIdGenerator idGenerator) : IInventoryRepository, IPackageRepository, IDataSnapshotStore
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string manifestPath = Path.Combine(rootPath, "aptechka.json");
     private readonly string itemsPath = Path.Combine(rootPath, "items");
+    private readonly string packagesPath = Path.Combine(rootPath, "packages");
 
     public async Task<IReadOnlyList<InventoryItem>> GetItemsAsync(
         CancellationToken cancellationToken = default)
@@ -57,6 +58,55 @@ public sealed class FileInventoryRepository(
 
             var itemPath = Path.Combine(itemsPath, $"{item.Id}.json");
             await WriteJsonAtomicallyAsync(itemPath, item, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<Package>> GetPackagesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!Directory.Exists(packagesPath))
+            {
+                return [];
+            }
+
+            var packages = new List<Package>();
+            foreach (var path in Directory.EnumerateFiles(packagesPath, "*.json"))
+            {
+                var package = await ReadJsonAsync<Package>(path, cancellationToken);
+                package.EnsureValid();
+                packages.Add(package);
+            }
+
+            return packages.OrderBy(static package => package.CreatedAt).ToArray();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task SavePackageAsync(
+        Package package,
+        CancellationToken cancellationToken = default)
+    {
+        package.EnsureValid();
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(rootPath);
+            Directory.CreateDirectory(packagesPath);
+            await EnsureManifestAsync(cancellationToken);
+
+            var packagePath = Path.Combine(packagesPath, $"{package.Id}.json");
+            await WriteJsonAtomicallyAsync(packagePath, package, cancellationToken);
         }
         finally
         {
@@ -221,23 +271,47 @@ public sealed class FileInventoryRepository(
         var manifest = await ReadJsonAsync<DatasetManifest>(snapshotManifestPath, cancellationToken);
         manifest.EnsureCompatible();
 
+        var items = new Dictionary<string, InventoryItem>(StringComparer.Ordinal);
         var snapshotItemsPath = Path.Combine(snapshotRoot, "items");
-        if (!Directory.Exists(snapshotItemsPath))
+        if (Directory.Exists(snapshotItemsPath))
+        {
+            foreach (var itemPath in Directory.EnumerateFiles(snapshotItemsPath, "*.json"))
+            {
+                var item = await ReadJsonAsync<InventoryItem>(itemPath, cancellationToken);
+                item.EnsureValid();
+                EnsureFileNameMatchesId(itemPath, item.Id, "позиции");
+                items[item.Id] = item;
+            }
+        }
+
+        var snapshotPackagesPath = Path.Combine(snapshotRoot, "packages");
+        if (!Directory.Exists(snapshotPackagesPath))
         {
             return;
         }
 
-        foreach (var itemPath in Directory.EnumerateFiles(snapshotItemsPath, "*.json"))
+        foreach (var packagePath in Directory.EnumerateFiles(snapshotPackagesPath, "*.json"))
         {
-            var item = await ReadJsonAsync<InventoryItem>(itemPath, cancellationToken);
-            item.EnsureValid();
-            if (!string.Equals(
-                Path.GetFileNameWithoutExtension(itemPath),
-                item.Id,
-                StringComparison.Ordinal))
+            var package = await ReadJsonAsync<Package>(packagePath, cancellationToken);
+            package.EnsureValid();
+            EnsureFileNameMatchesId(packagePath, package.Id, "упаковки");
+            if (!items.TryGetValue(package.ItemId, out var item))
             {
-                throw new InvalidDataException("Имя файла позиции не совпадает с её ULID.");
+                throw new InvalidDataException("Упаковка ссылается на отсутствующую позицию.");
             }
+
+            if (package.DeletedAt is null && item.DeletedAt is not null)
+            {
+                throw new InvalidDataException("Активная упаковка не может ссылаться на архивную позицию.");
+            }
+        }
+    }
+
+    private static void EnsureFileNameMatchesId(string path, string id, string entityName)
+    {
+        if (!string.Equals(Path.GetFileNameWithoutExtension(path), id, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Имя файла {entityName} не совпадает с её ULID.");
         }
     }
 
@@ -248,13 +322,19 @@ public sealed class FileInventoryRepository(
             return true;
         }
 
-        if (!relativePath.StartsWith("items/", StringComparison.Ordinal) ||
+        return IsEntityJsonPath(relativePath, "items/") ||
+               IsEntityJsonPath(relativePath, "packages/");
+    }
+
+    private static bool IsEntityJsonPath(string relativePath, string prefix)
+    {
+        if (!relativePath.StartsWith(prefix, StringComparison.Ordinal) ||
             !relativePath.EndsWith(".json", StringComparison.Ordinal))
         {
             return false;
         }
 
-        var id = relativePath["items/".Length..^".json".Length];
+        var id = relativePath[prefix.Length..^".json".Length];
         return !id.Contains('/') && UlidGenerator.IsValid(id);
     }
 

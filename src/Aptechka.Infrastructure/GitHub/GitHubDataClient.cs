@@ -260,8 +260,13 @@ public sealed class GitHubDataClient(HttpClient httpClient)
 
     private static bool IsDataPath(string path) =>
         string.Equals(path, "aptechka.json", StringComparison.Ordinal) ||
-        (path.StartsWith("items/", StringComparison.Ordinal) &&
-         path.EndsWith(".json", StringComparison.Ordinal));
+        IsEntityJsonPath(path, "items/") ||
+        IsEntityJsonPath(path, "packages/");
+
+    private static bool IsEntityJsonPath(string path, string prefix) =>
+        path.StartsWith(prefix, StringComparison.Ordinal) &&
+        path.EndsWith(".json", StringComparison.Ordinal) &&
+        !path[prefix.Length..^".json".Length].Contains('/');
 
     private static string RemoveWhitespace(string value) =>
         string.Concat(value.Where(static character => !char.IsWhiteSpace(character)));

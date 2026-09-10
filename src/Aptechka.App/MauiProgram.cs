@@ -35,9 +35,12 @@ public static class MauiProgram
                 services.GetRequiredService<IIdGenerator>()));
         builder.Services.AddSingleton<IInventoryRepository>(services =>
             services.GetRequiredService<FileInventoryRepository>());
+        builder.Services.AddSingleton<IPackageRepository>(services =>
+            services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<IDataSnapshotStore>(services =>
             services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<InventoryService>();
+        builder.Services.AddSingleton<PackageService>();
         builder.Services.AddSingleton(new HttpClient
         {
             BaseAddress = new Uri("https://api.github.com/"),

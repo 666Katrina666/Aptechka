@@ -73,6 +73,63 @@ public sealed class GitHubSyncIntegrationTests
         Assert.Equal("P1 integration check", item?.Name);
     }
 
+    [Fact]
+    public async Task RoundTrip_PushesThenPullsOnePackage()
+    {
+        var settings = IntegrationSettings.TryRead();
+        if (settings is null)
+        {
+            return;
+        }
+
+        await using var first = CreateContext();
+        await first.SyncService.SyncAsync(settings.Target, settings.Token, "integration-package-first");
+        var item = await first.InventoryService.CreateAsync(new InventoryItemDraft(
+            "P3A package item",
+            [],
+            InventoryItemCategory.MedicalSupply,
+            [],
+            null,
+            null,
+            "Temporary package roundtrip",
+            false));
+        var created = await first.PackageService.CreateAsync(
+            item.Id,
+            new PackageDraft(
+                "blister",
+                new DateOnly(2027, 4, 30),
+                ExpirationPrecision.Month,
+                null,
+                null,
+                StockState.Available,
+                null));
+
+        var pushed = await first.SyncService.SyncAsync(
+            settings.Target,
+            settings.Token,
+            "integration-package-first");
+        Assert.Equal(SyncOutcome.Pushed, pushed.Outcome);
+        Assert.True((await first.Repository.ReadAsync()).Files.ContainsKey($"packages/{created.Id}.json"));
+
+        await using var second = CreateContext();
+        var pulled = await second.SyncService.SyncAsync(
+            settings.Target,
+            settings.Token,
+            "integration-package-second");
+        var loadedItem = Assert.Single(await second.InventoryService.GetCatalogAsync());
+        var loadedPackage = Assert.Single(await second.PackageService.GetPackagesForItemAsync(loadedItem.Id));
+        var snapshot = await second.Repository.ReadAsync();
+
+        Assert.Equal(SyncOutcome.Pulled, pulled.Outcome);
+        Assert.Equal(created.Id, loadedPackage.Id);
+        Assert.Equal(loadedItem.Id, loadedPackage.ItemId);
+        Assert.Equal("blister", loadedPackage.Label);
+        Assert.Equal(new DateOnly(2027, 4, 30), loadedPackage.ExpirationDate);
+        Assert.Equal(ExpirationPrecision.Month, loadedPackage.ExpirationPrecision);
+        Assert.Equal(StockState.Available, loadedPackage.StockState);
+        Assert.True(snapshot.Files.ContainsKey($"packages/{created.Id}.json"));
+    }
+
     private static IntegrationContext CreateContext()
     {
         var root = Path.Combine(Path.GetTempPath(), "aptechka-integration", Guid.NewGuid().ToString("N"));
@@ -82,7 +139,6 @@ public sealed class GitHubSyncIntegrationTests
             Path.Combine(root, "data"),
             clock,
             idGenerator);
-        var packages = new InMemoryPackageRepository();
         var syncService = new GitHubSyncService(
             repository,
             new SyncStateStore(Path.Combine(root, "sync", "state.json")),
@@ -95,7 +151,8 @@ public sealed class GitHubSyncIntegrationTests
         return new IntegrationContext(
             root,
             repository,
-            new InventoryService(repository, packages, clock, idGenerator),
+            new InventoryService(repository, repository, clock, idGenerator),
+            new PackageService(repository, repository, clock, idGenerator),
             syncService);
     }
 
@@ -128,10 +185,12 @@ public sealed class GitHubSyncIntegrationTests
         string rootPath,
         FileInventoryRepository repository,
         InventoryService inventoryService,
+        PackageService packageService,
         GitHubSyncService syncService) : IAsyncDisposable
     {
         public FileInventoryRepository Repository { get; } = repository;
         public InventoryService InventoryService { get; } = inventoryService;
+        public PackageService PackageService { get; } = packageService;
         public GitHubSyncService SyncService { get; } = syncService;
 
         public ValueTask DisposeAsync()
@@ -143,17 +202,5 @@ public sealed class GitHubSyncIntegrationTests
 
             return ValueTask.CompletedTask;
         }
-    }
-
-    private sealed class InMemoryPackageRepository : IPackageRepository
-    {
-        public Task<IReadOnlyList<Package>> GetPackagesAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<Package>>([]);
-
-        public Task SavePackageAsync(
-            Package package,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
     }
 }
