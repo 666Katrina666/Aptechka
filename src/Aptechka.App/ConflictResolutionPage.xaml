@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.ConflictResolutionPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:ConflictResolutionViewModel"
+    Title="Разрешение конфликтов">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="16" Spacing="16" MaximumWidthRequest="720">
+            <Label
+                FontSize="16"
+                LineBreakMode="WordWrap"
+                Text="Локальные данные и GitHub различаются. Для каждого различия выбери версию на этом устройстве или из GitHub." />
+            <Label
+                LineBreakMode="WordWrap"
+                Text="{Binding Status}"
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+            <VerticalStackLayout
+                BindableLayout.ItemsSource="{Binding Rows}"
+                IsVisible="{Binding HasConflicts}"
+                Spacing="16">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate x:DataType="viewModels:ConflictChoiceRow">
+                        <VerticalStackLayout Spacing="10">
+                            <Label
+                                FontAttributes="Bold"
+                                FontSize="18"
+                                LineBreakMode="WordWrap"
+                                Text="{Binding Title}" />
+                            <Label
+                                LineBreakMode="WordWrap"
+                                Text="{Binding FieldCaption}"
+                                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+                            <Border
+                                Padding="12"
+                                MinimumHeightRequest="44"
+                                StrokeThickness="1">
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding SelectLocalCommand}" />
+                                </Border.GestureRecognizers>
+                                <Border.Triggers>
+                                    <DataTrigger Binding="{Binding IsLocalSelected}" TargetType="Border" Value="True">
+                                        <Setter Property="Stroke" Value="{StaticResource Primary}" />
+                                        <Setter Property="StrokeThickness" Value="3" />
+                                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource Secondary}, Dark={StaticResource Gray900}}" />
+                                    </DataTrigger>
+                                </Border.Triggers>
+                                <VerticalStackLayout Spacing="6">
+                                    <Label FontAttributes="Bold" Text="На этом устройстве" />
+                                    <Label
+                                        FontSize="13"
+                                        IsVisible="{Binding IsLocalSelected}"
+                                        Text="Выбрано"
+                                        TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                    <Label LineBreakMode="WordWrap" Text="{Binding LocalValue}" />
+                                </VerticalStackLayout>
+                            </Border>
+
+                            <Border
+                                Padding="12"
+                                MinimumHeightRequest="44"
+                                StrokeThickness="1">
+                                <Border.GestureRecognizers>
+                                    <TapGestureRecognizer Command="{Binding SelectRemoteCommand}" />
+                                </Border.GestureRecognizers>
+                                <Border.Triggers>
+                                    <DataTrigger Binding="{Binding IsRemoteSelected}" TargetType="Border" Value="True">
+                                        <Setter Property="Stroke" Value="{StaticResource Primary}" />
+                                        <Setter Property="StrokeThickness" Value="3" />
+                                        <Setter Property="BackgroundColor" Value="{AppThemeBinding Light={StaticResource Secondary}, Dark={StaticResource Gray900}}" />
+                                    </DataTrigger>
+                                </Border.Triggers>
+                                <VerticalStackLayout Spacing="6">
+                                    <Label FontAttributes="Bold" Text="Из GitHub" />
+                                    <Label
+                                        FontSize="13"
+                                        IsVisible="{Binding IsRemoteSelected}"
+                                        Text="Выбрано"
+                                        TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                    <Label LineBreakMode="WordWrap" Text="{Binding RemoteValue}" />
+                                </VerticalStackLayout>
+                            </Border>
+                        </VerticalStackLayout>
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+
+            <Button
+                Clicked="OnApplyClicked"
+                IsEnabled="{Binding CanApply}"
+                Text="Применить решения" />
+            <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

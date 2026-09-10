@@ -57,6 +57,8 @@ public static class MauiProgram
         builder.Services.AddTransient<ItemEditorPage>();
         builder.Services.AddTransient<PackageEditorViewModel>();
         builder.Services.AddTransient<PackageEditorPage>();
+        builder.Services.AddTransient<ConflictResolutionViewModel>();
+        builder.Services.AddTransient<ConflictResolutionPage>();
 
         return builder.Build();
     }

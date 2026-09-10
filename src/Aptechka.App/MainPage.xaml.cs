@@ -1,4 +1,5 @@
 using Aptechka.App.ViewModels;
+using Aptechka.Application.Sync;
 
 namespace Aptechka.App;
 
@@ -12,6 +13,7 @@ public partial class MainPage : ContentPage
         InitializeComponent();
         BindingContext = this.viewModel = viewModel;
         this.services = services;
+        viewModel.ConflictResolutionRequested += OnConflictResolutionRequested;
     }
 
     protected override async void OnAppearing()
@@ -36,6 +38,28 @@ public partial class MainPage : ContentPage
         }
 
         await OpenEditorAsync(row.Id);
+    }
+
+    private async void OnConflictResolutionRequested(object? sender, ConflictResolutionRequest request)
+    {
+        var page = services.GetRequiredService<ConflictResolutionPage>();
+        await page.InitializeAsync(request);
+        EventHandler<SyncResult>? resolved = null;
+        EventHandler? unloaded = null;
+        resolved = async (_, result) =>
+        {
+            page.Resolved -= resolved;
+            await Navigation.PopAsync();
+            await viewModel.CompleteConflictResolutionAsync(result);
+        };
+        unloaded = (_, _) =>
+        {
+            page.Unloaded -= unloaded;
+            page.Resolved -= resolved;
+        };
+        page.Resolved += resolved;
+        page.Unloaded += unloaded;
+        await Navigation.PushAsync(page);
     }
 
     private async Task OpenEditorAsync(string? itemId)

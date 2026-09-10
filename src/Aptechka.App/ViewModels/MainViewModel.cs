@@ -69,6 +69,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    public event EventHandler<ConflictResolutionRequest>? ConflictResolutionRequested;
+
     public ICommand SyncCommand { get; }
 
     public string SearchQuery
@@ -248,6 +250,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
+    public async Task CompleteConflictResolutionAsync(SyncResult result)
+    {
+        Status = result.Message;
+        await RefreshItemsAsync();
+    }
+
     private async Task SyncAsync()
     {
         if (IsBusy)
@@ -285,6 +293,18 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             await RefreshItemsAsync();
             Status = result.Message;
+            if (result.Outcome == SyncOutcome.Conflict)
+            {
+                var resolvable = result.Conflicts
+                    .Where(static conflict => !ConflictPresentation.IsManifest(conflict))
+                    .ToArray();
+                if (resolvable.Length > 0)
+                {
+                    ConflictResolutionRequested?.Invoke(
+                        this,
+                        new ConflictResolutionRequest(target, DeviceInfo.Name, resolvable));
+                }
+            }
         }
         catch (Exception exception)
         {
