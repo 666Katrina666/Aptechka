@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$SkipBuild
 )
@@ -13,6 +13,29 @@ $installPath = Join-Path $env:LOCALAPPDATA 'Programs\Aptechka'
 $executablePath = Join-Path $installPath 'Aptechka.App.exe'
 $desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop)
 $shortcutPath = Join-Path $desktopPath 'Аптечка.lnk'
+
+function Stop-InstalledAptechka {
+    $running = @(Get-Process -Name 'Aptechka.App' -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) {
+        return
+    }
+
+    foreach ($process in $running) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+
+    & taskkill.exe /F /IM 'Aptechka.App.exe' /T 2>$null | Out-Null
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 300
+        $running = @(Get-Process -Name 'Aptechka.App' -ErrorAction SilentlyContinue)
+    } while ($running.Count -gt 0 -and (Get-Date) -lt $deadline)
+
+    if ($running.Count -gt 0) {
+        throw 'Could not close the installed Aptechka app. Close it and retry.'
+    }
+}
 
 if (-not $SkipBuild) {
     & dotnet publish $projectPath `
@@ -32,11 +55,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $publishPath 'Aptechka.App.exe') -Pa
     throw "Published executable was not found at '$publishPath'."
 }
 
-$runningInstalledApp = Get-Process -Name 'Aptechka.App' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -eq $executablePath }
-if ($runningInstalledApp) {
-    throw 'Close the installed Aptechka app before updating it.'
-}
+Stop-InstalledAptechka
 
 New-Item -ItemType Directory -Path $installPath -Force | Out-Null
 Copy-Item -Path (Join-Path $publishPath '*') -Destination $installPath -Recurse -Force
@@ -48,6 +67,10 @@ $shortcut.WorkingDirectory = $installPath
 $shortcut.IconLocation = "$executablePath,0"
 $shortcut.Description = 'Локальная домашняя аптечка'
 $shortcut.Save()
+
+if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw "Shortcut was not created at '$shortcutPath'."
+}
 
 Write-Host "Installed: $executablePath"
 Write-Host "Shortcut: $shortcutPath"

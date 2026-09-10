@@ -1,4 +1,5 @@
 using Aptechka.App.ViewModels;
+using Aptechka.Application.Inventory;
 using Aptechka.Domain.Inventory;
 
 namespace Aptechka.App;
@@ -22,34 +23,19 @@ public partial class ItemEditorPage : ContentPage
 
     private async void OnNameConflictDetected(object? sender, IReadOnlyList<InventoryItem> conflicts)
     {
-        var match = conflicts[0];
-        var details = string.Join(
-            ", ",
-            new[]
-            {
-                match.Category == InventoryItemCategory.Medicine ? "лекарство" : "медицинский расходник",
-                match.Form,
-                match.Strength,
-            }.Where(static value => !string.IsNullOrEmpty(value)));
+        var openLabels = NameConflictChoice.OpenLabels(conflicts).ToArray();
+        var buttons = openLabels.Append(NameConflictChoice.CreateAnyway).ToArray();
         var title = conflicts.Count == 1
-            ? $"Уже есть позиция «{match.Name}»."
+            ? $"Уже есть позиция «{conflicts[0].Name}»."
             : $"Найдено позиций с таким названием: {conflicts.Count}.";
-        var message = string.IsNullOrEmpty(details)
-            ? "Открыть существующую или создать ещё одну?"
-            : $"{details}. Открыть существующую или создать ещё одну?";
 
-        var action = await DisplayActionSheet(
-            $"{title} {message}",
-            "Отмена",
-            null,
-            "Открыть существующую",
-            "Всё равно создать");
-
-        if (action == "Открыть существующую")
+        var action = await DisplayActionSheet(title, "Отмена", null, buttons);
+        var openedItemId = NameConflictChoice.ResolveOpenedItemId(conflicts, action);
+        if (openedItemId is not null)
         {
-            await viewModel.LoadAsync(match.Id);
+            await viewModel.LoadAsync(openedItemId);
         }
-        else if (action == "Всё равно создать")
+        else if (action == NameConflictChoice.CreateAnyway)
         {
             await viewModel.CreateDespiteNameConflictAsync();
         }

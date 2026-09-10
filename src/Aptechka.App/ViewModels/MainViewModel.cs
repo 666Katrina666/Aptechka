@@ -156,8 +156,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task LoadAsync()
     {
-        HasSavedToken = await tokenStore.HasTokenAsync();
-        await RefreshItemsAsync();
+        try
+        {
+            try
+            {
+                HasSavedToken = await tokenStore.HasTokenAsync();
+            }
+            catch (Exception exception)
+            {
+                HasSavedToken = false;
+                Status = $"Не удалось проверить сохранённый токен: {exception.Message}";
+            }
+
+            await RefreshItemsAsync();
+        }
+        catch (Exception exception)
+        {
+            Status = $"Не удалось загрузить каталог: {exception.Message}";
+        }
     }
 
     public async Task RefreshItemsAsync()
