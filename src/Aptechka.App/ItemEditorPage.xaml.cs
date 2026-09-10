@@ -1,5 +1,4 @@
 using Aptechka.App.ViewModels;
-using Aptechka.Application.Inventory;
 using Aptechka.Domain.Inventory;
 
 namespace Aptechka.App;

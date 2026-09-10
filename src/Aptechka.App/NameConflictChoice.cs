@@ -1,8 +1,8 @@
 using Aptechka.Domain.Inventory;
 
-namespace Aptechka.Application.Inventory;
+namespace Aptechka.App;
 
-public static class NameConflictChoice
+internal static class NameConflictChoice
 {
     public const string CreateAnyway = "Всё равно создать";
 

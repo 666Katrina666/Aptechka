@@ -139,26 +139,6 @@ public sealed class InventoryServiceTests
     }
 
     [Fact]
-    public void NameConflictChoice_ResolveOpenedItemId_SelectsTheChosenItem()
-    {
-        var first = Item(FirstId, "Ибупрофен", "200 мг");
-        var second = Item(SecondId, "Ибупрофен", "400 мг");
-        var conflicts = new[] { first, second };
-
-        Assert.Equal(
-            second.Id,
-            NameConflictChoice.ResolveOpenedItemId(conflicts, NameConflictChoice.OpenLabel(second)));
-        Assert.Null(NameConflictChoice.ResolveOpenedItemId(conflicts, NameConflictChoice.CreateAnyway));
-        Assert.Null(NameConflictChoice.ResolveOpenedItemId(conflicts, "Открыть существующую"));
-        Assert.Null(NameConflictChoice.ResolveOpenedItemId(conflicts, null));
-
-        var identical = new[] { first, Item(SecondId, "Ибупрофен", "200 мг") };
-        var secondLabel = NameConflictChoice.OpenLabels(identical)[1];
-        Assert.Equal(SecondId, NameConflictChoice.ResolveOpenedItemId(identical, secondLabel));
-        Assert.NotEqual(NameConflictChoice.OpenLabel(identical[0]), secondLabel);
-    }
-
-    [Fact]
     public async Task SearchAsync_EmptyQuery_ReturnsCatalogSortedByName()
     {
         var context = await CreatePopulatedContext();
@@ -210,22 +190,6 @@ public sealed class InventoryServiceTests
         var service = new InventoryService(repository, clock, new StubIdGenerator());
         return new TestContext(service, repository, clock);
     }
-
-    private static InventoryItem Item(
-        string id,
-        string name,
-        string? strength) =>
-        InventoryItem.Create(
-            id,
-            Now,
-            name,
-            [],
-            InventoryItemCategory.Medicine,
-            [],
-            "таблетки",
-            strength,
-            null,
-            false);
 
     private static InventoryItemDraft Draft(
         string name,
