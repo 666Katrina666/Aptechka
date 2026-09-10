@@ -1,0 +1,706 @@
+using System.Text.Json;
+using Aptechka.Application.Inventory;
+using Aptechka.Application.Sync;
+using Aptechka.Domain.Inventory;
+using Aptechka.Infrastructure.GitHub;
+using Aptechka.Infrastructure.Storage;
+using Aptechka.Infrastructure.Sync;
+
+namespace Aptechka.Application.Tests;
+
+public sealed class GitHubSyncServiceTests
+{
+    private const string ItemId = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    private const string SecondItemId = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    private const string PackageId = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    private const string DatasetId = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
+    private const string OtherDatasetId = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
+    private const string Token = "test-token";
+
+    private static readonly DateTimeOffset T0 = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset T1 = T0.AddHours(1);
+    private static readonly DateTimeOffset T2 = T0.AddHours(2);
+    private static readonly DateTimeOffset MergedAt = T0.AddHours(3);
+
+    [Fact]
+    public async Task Sync_MergesDifferentFilesAndPushes()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var other = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var localItem = Rename(item, "Нурофен", T1);
+        var remoteOther = Rename(other, "Вата стерильная", T2);
+        var @base = Snap(File(Manifest()), File(item), File(other));
+        var local = Snap(File(Manifest()), File(localItem), File(other));
+        var remote = Snap(File(Manifest()), File(item), File(remoteOther));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, local, remote);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-0"], harness.GitHub.CommitParents);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-1", expected);
+        Assert.DoesNotContain("Нурофен", result.Message);
+        Assert.DoesNotContain(Token, result.Message);
+    }
+
+    [Fact]
+    public async Task Sync_MergesDifferentFieldsOfOneItemAndPushes()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = item.Update(T1, "Нурофен", item.Aliases, item.Category, item.ActiveIngredients, item.Form, item.Strength, item.Description, item.KeepInStock);
+        var remoteItem = item.Update(T2, item.Name, item.Aliases, item.Category, item.ActiveIngredients, "капсулы", item.Strength, item.Description, item.KeepInStock);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote = Snap(File(Manifest()), File(remoteItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, local, remote);
+        var mergedItem = ReadItem(expected, ItemId);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-0"], harness.GitHub.CommitParents);
+        Assert.Equal("Нурофен", mergedItem.Name);
+        Assert.Equal("капсулы", mergedItem.Form);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
+    [Fact]
+    public async Task Sync_MergesPackageFieldsAndPushes()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var localPackage = package.Update(T1, "блистер", package.ExpirationDate, package.ExpirationPrecision, package.OpenedDate, package.ShelfLifeAfterOpeningDays, package.StockState, package.Note);
+        var remotePackage = package.Update(T2, package.Label, package.ExpirationDate, package.ExpirationPrecision, package.OpenedDate, package.ShelfLifeAfterOpeningDays, StockState.Low, package.Note);
+        var @base = Snap(File(Manifest()), File(item), File(package));
+        var local = Snap(File(Manifest()), File(item), File(localPackage));
+        var remote = Snap(File(Manifest()), File(item), File(remotePackage));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, local, remote);
+        var mergedPackage = ReadPackage(expected, PackageId);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal("блистер", mergedPackage.Label);
+        Assert.Equal(StockState.Low, mergedPackage.StockState);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
+    [Fact]
+    public async Task Sync_PullsWhenMergedEqualsRemoteWithoutCommit()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var remoteItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var remote = Snap(File(Manifest()), File(remoteItem));
+        await using var harness = await Harness.CreateAsync(@base, @base, Remote("sha-r", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Pulled, result.Outcome);
+        Assert.Equal("sha-r", result.CommitSha);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(remote));
+        await AssertStateAsync(harness, "sha-r", remote);
+    }
+
+    [Fact]
+    public async Task Sync_ReturnsUpToDateWithoutCommitWhenLocalEqualsRemote()
+    {
+        var snapshot = Snap(File(Manifest()), File(Item(ItemId, "Ибупрофен")));
+        await using var harness = await Harness.CreateAsync(snapshot, snapshot, Remote("sha-r", snapshot));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.UpToDate, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(snapshot));
+        await AssertStateAsync(harness, "sha-r", snapshot);
+    }
+
+    [Fact]
+    public async Task Sync_DoesNotCreateEmptyCommitWhenBothSidesMadeTheSameChange()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var changed = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var both = Snap(File(Manifest()), File(changed));
+        await using var harness = await Harness.CreateAsync(@base, both, Remote("sha-r", both));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.UpToDate, result.Outcome);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(both));
+        await AssertStateAsync(harness, "sha-r", both);
+    }
+
+    [Fact]
+    public async Task Sync_FieldConflictLeavesLocalRemoteAndBaseUnchanged()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var remoteItem = Rename(item, "Ибуфен", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote = Snap(File(Manifest()), File(remoteItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Conflict, result.Outcome);
+        Assert.Null(result.CommitSha);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.FieldChangedBoth, conflict.Kind);
+        Assert.Equal("name", conflict.Field);
+        Assert.DoesNotContain("Нурофен", result.Message);
+        Assert.DoesNotContain("Ибуфен", result.Message);
+        Assert.DoesNotContain(conflict.LocalValueJson!, result.Message);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_TombstoneVersusModificationIsConflict()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var deleted = item.Delete(T1);
+        var changed = Rename(item, "Нурофен", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(deleted));
+        var remote = Snap(File(Manifest()), File(changed));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Conflict, result.Outcome);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, Assert.Single(result.Conflicts).Kind);
+        Assert.DoesNotContain("Нурофен", result.Message);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_RetriesPushAfterOneHeadRace()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var other = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var firstRemote = Snap(File(Manifest()), File(item));
+        var secondRemote = Snap(File(Manifest()), File(item), File(other));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", firstRemote));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-1", secondRemote));
+        var expected = Merge(@base, local, secondRemote);
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(2, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(2, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-0", "sha-1"], harness.GitHub.CommitParents);
+        Assert.True(harness.GitHub.Committed[1].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-2", expected);
+        Assert.Equal("Нурофен", ReadItem(expected, ItemId).Name);
+        Assert.Equal("Вата", ReadItem(expected, SecondItemId).Name);
+    }
+
+    [Fact]
+    public async Task Sync_DoesNotAdvanceBaseAfterThreeHeadRaces()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-1", @base));
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-2", @base));
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-3", @base));
+
+        var exception = await Assert.ThrowsAsync<GitHubHeadChangedException>(() => harness.Sync());
+
+        Assert.Contains("повторно", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(Token, exception.Message);
+        Assert.DoesNotContain("Нурофен", exception.Message);
+        Assert.Equal(3, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(3, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-0", "sha-1", "sha-2"], harness.GitHub.CommitParents);
+        Assert.Equal("Нурофен", ReadItem(await harness.Repository.ReadAsync(), ItemId).Name);
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_DoesNotRetryOrdinaryGitHubErrorAsHeadRace()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubApiException(401, "Unauthorized"));
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => harness.Sync());
+
+        Assert.Equal(401, exception.StatusCode);
+        Assert.DoesNotContain(Token, exception.Message);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_RetriesMergeWhenCasFailsOnceAndKeepsLocalEdit()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = item.Update(T1, "Нурофен", item.Aliases, item.Category, item.ActiveIngredients, item.Form, item.Strength, item.Description, item.KeepInStock);
+        var remoteItem = item.Update(T2, item.Name, item.Aliases, item.Category, item.ActiveIngredients, "капсулы", item.Strength, item.Description, item.KeepInStock);
+        var editedLocalItem = localItem.Update(T1.AddMinutes(5), localItem.Name, localItem.Aliases, localItem.Category, localItem.ActiveIngredients, localItem.Form, localItem.Strength, "во время sync", localItem.KeepInStock);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote = Snap(File(Manifest()), File(remoteItem));
+        var editedLocal = Snap(File(Manifest()), File(editedLocalItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+        harness.Store.BeforeTryReplace = async (call, _, _) =>
+        {
+            if (call == 1)
+            {
+                await harness.Repository.ReplaceAsync(editedLocal);
+            }
+        };
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, editedLocal, remote);
+        var mergedItem = ReadItem(expected, ItemId);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(2, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal(2, harness.Store.TryReplaceCalls);
+        Assert.Equal("Нурофен", mergedItem.Name);
+        Assert.Equal("капсулы", mergedItem.Form);
+        Assert.Equal("во время sync", mergedItem.Description);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
+    [Fact]
+    public async Task Sync_KeepsPostCasLocalEditAndSavesPushedSnapshotAsBase()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        harness.GitHub.BeforeCommit = async (_, snapshot, _) =>
+        {
+            var current = ReadItem(snapshot, ItemId);
+            await harness.Repository.SaveItemAsync(
+                current.Update(
+                    T2,
+                    "после CAS",
+                    current.Aliases,
+                    current.Category,
+                    current.ActiveIngredients,
+                    current.Form,
+                    current.Strength,
+                    current.Description,
+                    current.KeepInStock));
+        };
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, local, @base);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        Assert.Equal("Нурофен", ReadItem(harness.GitHub.Committed[0], ItemId).Name);
+        Assert.Equal("после CAS", ReadItem(await harness.Repository.ReadAsync(), ItemId).Name);
+        await AssertStateAsync(harness, "commit-1", expected);
+        Assert.Equal("Нурофен", ReadItem((await harness.StateStore.LoadAsync())!.GetBaseSnapshot(), ItemId).Name);
+    }
+
+    [Fact]
+    public async Task Sync_KeepsMergedLocalAndDoesNotSaveStateWhenCommitFails()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubApiException(500, "GitHub unavailable"));
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => harness.Sync());
+        var expected = Merge(@base, local, @base);
+
+        Assert.Equal(500, exception.StatusCode);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_NoBaseCompatibleSubsetPushes()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var remote = Snap(File(Manifest()));
+        var local = Snap(File(Manifest()), File(item));
+        await using var harness = await Harness.CreateAsync(null, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-0"], harness.GitHub.CommitParents);
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(local));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "commit-1", local);
+    }
+
+    [Fact]
+    public async Task Sync_NoBaseIncompatibleSnapshotsConflictWithoutWritingState()
+    {
+        var local = Snap(File(Manifest()), File(Item(ItemId, "Ибупрофен")));
+        var remote = Snap(File(Manifest()), File(Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply)));
+        await using var harness = await Harness.CreateAsync(null, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Conflict, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        Assert.Null(await harness.StateStore.LoadAsync());
+    }
+
+    [Fact]
+    public async Task Sync_DatasetMismatchDoesNotChangeState()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var local = Snap(File(Manifest()), File(item));
+        var remote = Snap(File(new DatasetManifest(DatasetManifest.CurrentSchemaVersion, OtherDatasetId, T0)), File(item));
+        await using var harness = await Harness.CreateAsync(local, local, Remote("sha-0", remote));
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Conflict, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Contains("datasetId", result.Message, StringComparison.Ordinal);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "sha-0", local);
+    }
+
+    [Fact]
+    public async Task Sync_HonorsCancellationToken()
+    {
+        var snapshot = Snap(File(Manifest()), File(Item(ItemId, "Ибупрофен")));
+        await using var harness = await Harness.CreateAsync(snapshot, snapshot, Remote("sha-0", snapshot));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => harness.Sync(cts.Token));
+
+        Assert.Equal(0, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        await AssertStateAsync(harness, "sha-0", snapshot);
+    }
+
+    private static async Task AssertStateAsync(Harness harness, string commitSha, DataSnapshot snapshot)
+    {
+        var state = await harness.StateStore.LoadAsync();
+        Assert.NotNull(state);
+        Assert.Equal(DatasetId, state.DatasetId);
+        Assert.Equal(commitSha, state.LastCommitSha);
+        Assert.True(state.GetBaseSnapshot().HasSameFiles(snapshot));
+    }
+
+    private static DataSnapshot Merge(DataSnapshot @base, DataSnapshot local, DataSnapshot remote)
+    {
+        var result = new SnapshotMergeEngine().Merge(@base, local, remote, MergedAt);
+        Assert.False(result.HasConflicts);
+        Assert.NotNull(result.MergedSnapshot);
+        return result.MergedSnapshot;
+    }
+
+    private static InventoryItem ReadItem(DataSnapshot snapshot, string id) =>
+        JsonSerializer.Deserialize<InventoryItem>(snapshot.Files[$"items/{id}.json"], AptechkaJson.Options)!;
+
+    private static Package ReadPackage(DataSnapshot snapshot, string id) =>
+        JsonSerializer.Deserialize<Package>(snapshot.Files[$"packages/{id}.json"], AptechkaJson.Options)!;
+
+    private static InventoryItem Item(
+        string id,
+        string name,
+        InventoryItemCategory category = InventoryItemCategory.Medicine) =>
+        InventoryItem.Create(
+            id,
+            T0,
+            name,
+            [],
+            category,
+            category == InventoryItemCategory.Medicine ? ["ибупрофен"] : [],
+            category == InventoryItemCategory.Medicine ? "таблетки" : null,
+            category == InventoryItemCategory.Medicine ? "200 мг" : null,
+            null,
+            category == InventoryItemCategory.Medicine);
+
+    private static InventoryItem Rename(InventoryItem item, string name, DateTimeOffset at) =>
+        item.Update(
+            at,
+            name,
+            item.Aliases,
+            item.Category,
+            item.ActiveIngredients,
+            item.Form,
+            item.Strength,
+            item.Description,
+            item.KeepInStock);
+
+    private static Package Package(string id, string itemId) =>
+        Domain.Inventory.Package.Create(
+            id,
+            T0,
+            itemId,
+            null,
+            new DateOnly(2027, 4, 30),
+            ExpirationPrecision.Month,
+            null,
+            null,
+            StockState.Available,
+            null);
+
+    private static DatasetManifest Manifest() =>
+        new(DatasetManifest.CurrentSchemaVersion, DatasetId, T0);
+
+    private static GitHubRemoteSnapshot Remote(string sha, DataSnapshot data) =>
+        new(sha, "tree-" + sha, data);
+
+    private static DataSnapshot Snap(params (string Path, byte[] Content)[] files) =>
+        new(files.ToDictionary(static file => file.Path, static file => file.Content, StringComparer.Ordinal));
+
+    private static (string Path, byte[] Content) File(InventoryItem item) => ($"items/{item.Id}.json", Bytes(item));
+
+    private static (string Path, byte[] Content) File(Package package) => ($"packages/{package.Id}.json", Bytes(package));
+
+    private static (string Path, byte[] Content) File(DatasetManifest manifest) => ("aptechka.json", Bytes(manifest));
+
+    private static byte[] Bytes<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, AptechkaJson.Options);
+
+    private sealed class Harness : IAsyncDisposable
+    {
+        private readonly string rootPath;
+
+        private Harness(
+            string rootPath,
+            FileInventoryRepository repository,
+            InterceptingSnapshotStore store,
+            SyncStateStore stateStore,
+            FakeGitHubDataClient gitHub,
+            GitHubSyncService service)
+        {
+            this.rootPath = rootPath;
+            Repository = repository;
+            Store = store;
+            StateStore = stateStore;
+            GitHub = gitHub;
+            Service = service;
+        }
+
+        public FileInventoryRepository Repository { get; }
+
+        public InterceptingSnapshotStore Store { get; }
+
+        public SyncStateStore StateStore { get; }
+
+        public FakeGitHubDataClient GitHub { get; }
+
+        public GitHubSyncService Service { get; }
+
+        public static async Task<Harness> CreateAsync(
+            DataSnapshot? baseSnapshot,
+            DataSnapshot local,
+            GitHubRemoteSnapshot remote)
+        {
+            var rootPath = Path.Combine(Path.GetTempPath(), "aptechka-sync-tests", Guid.NewGuid().ToString("N"));
+            var clock = new StubClock(MergedAt);
+            var repository = new FileInventoryRepository(
+                Path.Combine(rootPath, "data"),
+                clock,
+                new SequenceIdGenerator());
+            if (!local.IsEmpty)
+            {
+                await repository.ReplaceAsync(local);
+            }
+
+            var store = new InterceptingSnapshotStore(repository);
+            var stateStore = new SyncStateStore(Path.Combine(rootPath, "sync", "state.json"));
+            if (baseSnapshot is not null)
+            {
+                await stateStore.SaveAsync(DatasetId, remote.CommitSha, baseSnapshot);
+            }
+
+            var gitHub = new FakeGitHubDataClient { Remote = remote };
+            var service = new GitHubSyncService(store, stateStore, gitHub, clock);
+            return new Harness(rootPath, repository, store, stateStore, gitHub, service);
+        }
+
+        public Task<SyncResult> Sync(CancellationToken cancellationToken = default) =>
+            Service.SyncAsync(new SyncTarget("owner", "repo", "sync-branch"), Token, "test-device", cancellationToken);
+
+        public ValueTask DisposeAsync()
+        {
+            if (Directory.Exists(rootPath))
+            {
+                Directory.Delete(rootPath, true);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InterceptingSnapshotStore(IDataSnapshotStore inner) : IDataSnapshotStore
+    {
+        public int TryReplaceCalls { get; private set; }
+
+        public Func<int, DataSnapshot, DataSnapshot, Task>? BeforeTryReplace { get; set; }
+
+        public Task<DataSnapshot> ReadAsync(CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(cancellationToken);
+
+        public Task EnsureInitializedAsync(CancellationToken cancellationToken = default) =>
+            inner.EnsureInitializedAsync(cancellationToken);
+
+        public Task ReplaceAsync(DataSnapshot snapshot, CancellationToken cancellationToken = default) =>
+            inner.ReplaceAsync(snapshot, cancellationToken);
+
+        public async Task<bool> TryReplaceAsync(
+            DataSnapshot expected,
+            DataSnapshot replacement,
+            CancellationToken cancellationToken = default)
+        {
+            var call = ++TryReplaceCalls;
+            if (BeforeTryReplace is not null)
+            {
+                await BeforeTryReplace(call, expected, replacement);
+            }
+
+            return await inner.TryReplaceAsync(expected, replacement, cancellationToken);
+        }
+    }
+
+    private sealed class FakeGitHubDataClient : IGitHubDataClient
+    {
+        public GitHubRemoteSnapshot? Remote { get; set; }
+
+        public int GetSnapshotCalls { get; private set; }
+
+        public int CommitCalls { get; private set; }
+
+        public List<string> CommitParents { get; } = [];
+
+        public List<DataSnapshot> Committed { get; } = [];
+
+        public Queue<Exception> CommitErrors { get; } = [];
+
+        public Queue<GitHubRemoteSnapshot> RemoteAfterFailure { get; } = [];
+
+        public Func<GitHubRemoteSnapshot, DataSnapshot, CancellationToken, Task>? BeforeCommit { get; set; }
+
+        public Task<GitHubRemoteSnapshot?> GetSnapshotAsync(
+            SyncTarget target,
+            string accessToken,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetSnapshotCalls++;
+            return Task.FromResult(Remote);
+        }
+
+        public Task InitializeRepositoryAsync(
+            SyncTarget target,
+            string accessToken,
+            byte[] manifestContent,
+            string deviceName,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async Task<string> CommitSnapshotAsync(
+            SyncTarget target,
+            string accessToken,
+            GitHubRemoteSnapshot remote,
+            DataSnapshot local,
+            string deviceName,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CommitCalls++;
+            CommitParents.Add(remote.CommitSha);
+            Committed.Add(local);
+            if (BeforeCommit is not null)
+            {
+                await BeforeCommit(remote, local, cancellationToken);
+            }
+
+            if (CommitErrors.Count > 0)
+            {
+                var error = CommitErrors.Dequeue();
+                if (RemoteAfterFailure.Count > 0)
+                {
+                    Remote = RemoteAfterFailure.Dequeue();
+                }
+
+                throw error;
+            }
+
+            var sha = $"commit-{CommitCalls}";
+            Remote = new GitHubRemoteSnapshot(sha, "tree-" + sha, local);
+            return sha;
+        }
+    }
+
+    private sealed class StubClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow => utcNow;
+
+        public DateOnly Today => DateOnly.FromDateTime(utcNow.Date);
+    }
+
+    private sealed class SequenceIdGenerator : IIdGenerator
+    {
+        public string Create(DateTimeOffset timestamp) => DatasetId;
+    }
+}

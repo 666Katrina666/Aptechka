@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Aptechka.Application.Inventory;
 using Aptechka.Application.Sync;
 using Aptechka.Domain.Inventory;
 using Aptechka.Infrastructure.GitHub;
@@ -9,8 +10,23 @@ namespace Aptechka.Infrastructure.Sync;
 public sealed class GitHubSyncService(
     IDataSnapshotStore snapshotStore,
     SyncStateStore stateStore,
-    GitHubDataClient gitHubClient) : ISyncService
+    IGitHubDataClient gitHubClient,
+    IClock clock) : ISyncService
 {
+    private const int MaxRemotePushAttempts = 3;
+    private const int MaxLocalCasAttempts = 3;
+
+    private const string DatasetMismatchMessage =
+        "Локальная аптечка и GitHub имеют разные datasetId. Автоматическая замена запрещена.";
+    private const string ConcurrentChangeMessage =
+        "Локальные и удалённые данные изменились одновременно. Синхронизация остановлена без потери данных.";
+    private const string LocalBusyMessage =
+        "Локальные данные изменялись во время синхронизации. Повтори попытку.";
+    private const string RepeatedHeadRaceMessage =
+        "Удалённая ветка изменялась повторно. Синхронизация остановлена без потери локальных данных.";
+
+    private readonly SnapshotMergeEngine mergeEngine = new();
+
     public async Task<SyncResult> SyncAsync(
         SyncTarget target,
         string accessToken,
@@ -23,49 +39,57 @@ public sealed class GitHubSyncService(
             throw new ArgumentException("GitHub-токен не задан.", nameof(accessToken));
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         var safeDeviceName = NormalizeDeviceName(deviceName);
         var local = await snapshotStore.ReadAsync(cancellationToken);
         var remote = await gitHubClient.GetSnapshotAsync(target, accessToken, cancellationToken);
 
         if (remote is null)
         {
-            if (local.IsEmpty)
-            {
-                await snapshotStore.EnsureInitializedAsync(cancellationToken);
-                local = await snapshotStore.ReadAsync(cancellationToken);
-            }
-
-            var initializedManifest = ReadManifest(local);
-            await gitHubClient.InitializeRepositoryAsync(
+            return await InitializeRepositoryAsync(
                 target,
                 accessToken,
-                local.Files["aptechka.json"],
                 safeDeviceName,
+                local,
                 cancellationToken);
+        }
 
-            remote = await gitHubClient.GetSnapshotAsync(target, accessToken, cancellationToken)
-                ?? throw new GitHubApiException(409, "GitHub не создал ветку после инициализации.");
+        return await SyncExistingAsync(
+            target,
+            accessToken,
+            safeDeviceName,
+            local,
+            remote,
+            cancellationToken);
+    }
 
-            if (!SnapshotSyncPlanner.AreEqual(local, remote.Data))
-            {
-                var commitSha = await gitHubClient.CommitSnapshotAsync(
-                    target,
-                    accessToken,
-                    remote,
-                    local,
-                    safeDeviceName,
-                    cancellationToken);
-                await stateStore.SaveAsync(
-                    initializedManifest.DatasetId,
-                    commitSha,
-                    local,
-                    cancellationToken);
-                return new SyncResult(
-                    SyncOutcome.Initialized,
-                    "Репозиторий данных создан и локальная позиция отправлена.",
-                    commitSha);
-            }
+    private async Task<SyncResult> InitializeRepositoryAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        DataSnapshot local,
+        CancellationToken cancellationToken)
+    {
+        if (local.IsEmpty)
+        {
+            await snapshotStore.EnsureInitializedAsync(cancellationToken);
+            local = await snapshotStore.ReadAsync(cancellationToken);
+        }
 
+        var initializedManifest = ReadManifest(local);
+        await gitHubClient.InitializeRepositoryAsync(
+            target,
+            accessToken,
+            local.Files["aptechka.json"],
+            deviceName,
+            cancellationToken);
+
+        var remote = await gitHubClient.GetSnapshotAsync(target, accessToken, cancellationToken)
+            ?? throw new GitHubApiException(409, "GitHub не создал ветку после инициализации.");
+        local = await snapshotStore.ReadAsync(cancellationToken);
+
+        if (local.HasSameFiles(remote.Data))
+        {
             await stateStore.SaveAsync(
                 initializedManifest.DatasetId,
                 remote.CommitSha,
@@ -77,30 +101,137 @@ public sealed class GitHubSyncService(
                 remote.CommitSha);
         }
 
-        var remoteManifest = ReadManifest(remote.Data);
+        try
+        {
+            var commitSha = await gitHubClient.CommitSnapshotAsync(
+                target,
+                accessToken,
+                remote,
+                local,
+                deviceName,
+                cancellationToken);
+            await stateStore.SaveAsync(
+                initializedManifest.DatasetId,
+                commitSha,
+                local,
+                cancellationToken);
+            return new SyncResult(
+                SyncOutcome.Initialized,
+                "Репозиторий данных создан и локальная позиция отправлена.",
+                commitSha);
+        }
+        catch (GitHubHeadChangedException)
+        {
+            return await SyncExistingAsync(
+                target,
+                accessToken,
+                deviceName,
+                null,
+                null,
+                cancellationToken,
+                consumedRemotePushAttempts: 1);
+        }
+    }
+
+    private async Task<SyncResult> SyncExistingAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        DataSnapshot? primedLocal,
+        GitHubRemoteSnapshot? primedRemote,
+        CancellationToken cancellationToken,
+        int consumedRemotePushAttempts = 0)
+    {
+        var remotePushAttempts = consumedRemotePushAttempts;
+        var usePrimed = primedRemote is not null;
+
+        while (remotePushAttempts < MaxRemotePushAttempts)
+        {
+            var retryBecauseOfHeadRace = false;
+            for (var casAttempt = 0; casAttempt < MaxLocalCasAttempts; casAttempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var local = usePrimed && primedLocal is not null
+                    ? primedLocal
+                    : await snapshotStore.ReadAsync(cancellationToken);
+                var remote = usePrimed
+                    ? primedRemote!
+                    : await gitHubClient.GetSnapshotAsync(target, accessToken, cancellationToken)
+                        ?? throw new GitHubApiException(404, "Репозиторий или ветка не найдены.");
+                usePrimed = false;
+
+                var attempt = await TryOnceAsync(
+                    target,
+                    accessToken,
+                    deviceName,
+                    local,
+                    remote,
+                    cancellationToken);
+                switch (attempt.Kind)
+                {
+                    case AttemptKind.Completed:
+                        return attempt.Result!;
+                    case AttemptKind.HeadRace:
+                        remotePushAttempts++;
+                        retryBecauseOfHeadRace = true;
+                        break;
+                    case AttemptKind.CasMiss:
+                        continue;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(attempt.Kind), attempt.Kind, null);
+                }
+
+                if (retryBecauseOfHeadRace)
+                {
+                    break;
+                }
+            }
+
+            if (retryBecauseOfHeadRace)
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException(LocalBusyMessage);
+        }
+
+        throw new GitHubHeadChangedException(RepeatedHeadRaceMessage);
+    }
+
+    private async Task<AttemptOutcome> TryOnceAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        DataSnapshot local,
+        GitHubRemoteSnapshot remote,
+        CancellationToken cancellationToken)
+    {
         if (local.IsEmpty)
         {
-            await snapshotStore.ReplaceAsync(remote.Data, cancellationToken);
+            if (!await snapshotStore.TryReplaceAsync(local, remote.Data, cancellationToken))
+            {
+                return AttemptOutcome.CasMiss();
+            }
+
+            var pulledManifest = ReadManifest(remote.Data);
             await stateStore.SaveAsync(
-                remoteManifest.DatasetId,
+                pulledManifest.DatasetId,
                 remote.CommitSha,
                 remote.Data,
                 cancellationToken);
-            return new SyncResult(
+            return AttemptOutcome.Completed(new SyncResult(
                 SyncOutcome.Pulled,
                 "Данные загружены с GitHub на это устройство.",
-                remote.CommitSha);
+                remote.CommitSha));
         }
 
         var localManifest = ReadManifest(local);
-        if (!string.Equals(
-                localManifest.DatasetId,
-                remoteManifest.DatasetId,
-                StringComparison.Ordinal))
+        var remoteManifest = ReadManifest(remote.Data);
+        if (!string.Equals(localManifest.DatasetId, remoteManifest.DatasetId, StringComparison.Ordinal))
         {
-            return new SyncResult(
+            return AttemptOutcome.Completed(new SyncResult(
                 SyncOutcome.Conflict,
-                "Локальная аптечка и GitHub имеют разные datasetId. Автоматическая замена запрещена.");
+                DatasetMismatchMessage));
         }
 
         var state = await stateStore.LoadAsync(cancellationToken);
@@ -109,40 +240,136 @@ public sealed class GitHubSyncService(
             ? state.GetBaseSnapshot()
             : null;
 
-        var action = SnapshotSyncPlanner.Plan(baseSnapshot, local, remote.Data);
+        if (baseSnapshot is null)
+        {
+            return await TryWithoutBaseAsync(
+                target,
+                accessToken,
+                deviceName,
+                local,
+                remote,
+                localManifest,
+                remoteManifest,
+                cancellationToken);
+        }
+
+        var merge = mergeEngine.Merge(baseSnapshot, local, remote.Data, clock.UtcNow);
+        if (merge.HasConflicts)
+        {
+            return AttemptOutcome.Completed(new SyncResult(
+                SyncOutcome.Conflict,
+                ConcurrentChangeMessage,
+                conflicts: merge.Conflicts));
+        }
+
+        var merged = merge.MergedSnapshot
+            ?? throw new InvalidDataException("Объединение не вернуло снимок.");
+
+        if (merged.HasSameFiles(remote.Data))
+        {
+            if (!local.HasSameFiles(merged) &&
+                !await snapshotStore.TryReplaceAsync(local, merged, cancellationToken))
+            {
+                return AttemptOutcome.CasMiss();
+            }
+
+            await stateStore.SaveAsync(
+                localManifest.DatasetId,
+                remote.CommitSha,
+                merged,
+                cancellationToken);
+            return AttemptOutcome.Completed(new SyncResult(
+                local.HasSameFiles(remote.Data) ? SyncOutcome.UpToDate : SyncOutcome.Pulled,
+                local.HasSameFiles(remote.Data)
+                    ? "Локальные данные и GitHub уже совпадают."
+                    : "Изменения с GitHub загружены на устройство.",
+                remote.CommitSha));
+        }
+
+        if (!local.HasSameFiles(merged) &&
+            !await snapshotStore.TryReplaceAsync(local, merged, cancellationToken))
+        {
+            return AttemptOutcome.CasMiss();
+        }
+
+        try
+        {
+            var commitSha = await gitHubClient.CommitSnapshotAsync(
+                target,
+                accessToken,
+                remote,
+                merged,
+                deviceName,
+                cancellationToken);
+            await stateStore.SaveAsync(
+                localManifest.DatasetId,
+                commitSha,
+                merged,
+                cancellationToken);
+            return AttemptOutcome.Completed(new SyncResult(
+                SyncOutcome.Pushed,
+                "Локальные изменения отправлены в GitHub.",
+                commitSha));
+        }
+        catch (GitHubHeadChangedException)
+        {
+            return AttemptOutcome.HeadRace();
+        }
+    }
+
+    private async Task<AttemptOutcome> TryWithoutBaseAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        DataSnapshot local,
+        GitHubRemoteSnapshot remote,
+        DatasetManifest localManifest,
+        DatasetManifest remoteManifest,
+        CancellationToken cancellationToken)
+    {
+        var action = SnapshotSyncPlanner.Plan(null, local, remote.Data);
         switch (action)
         {
             case SnapshotSyncAction.Push:
+                try
                 {
                     var commitSha = await gitHubClient.CommitSnapshotAsync(
                         target,
                         accessToken,
                         remote,
                         local,
-                        safeDeviceName,
+                        deviceName,
                         cancellationToken);
                     await stateStore.SaveAsync(
                         localManifest.DatasetId,
                         commitSha,
                         local,
                         cancellationToken);
-                    return new SyncResult(
+                    return AttemptOutcome.Completed(new SyncResult(
                         SyncOutcome.Pushed,
                         "Локальные изменения отправлены в GitHub.",
-                        commitSha);
+                        commitSha));
+                }
+                catch (GitHubHeadChangedException)
+                {
+                    return AttemptOutcome.HeadRace();
                 }
 
             case SnapshotSyncAction.Pull:
-                await snapshotStore.ReplaceAsync(remote.Data, cancellationToken);
+                if (!await snapshotStore.TryReplaceAsync(local, remote.Data, cancellationToken))
+                {
+                    return AttemptOutcome.CasMiss();
+                }
+
                 await stateStore.SaveAsync(
                     remoteManifest.DatasetId,
                     remote.CommitSha,
                     remote.Data,
                     cancellationToken);
-                return new SyncResult(
+                return AttemptOutcome.Completed(new SyncResult(
                     SyncOutcome.Pulled,
                     "Изменения с GitHub загружены на устройство.",
-                    remote.CommitSha);
+                    remote.CommitSha));
 
             case SnapshotSyncAction.UpToDate:
                 await stateStore.SaveAsync(
@@ -150,15 +377,15 @@ public sealed class GitHubSyncService(
                     remote.CommitSha,
                     remote.Data,
                     cancellationToken);
-                return new SyncResult(
+                return AttemptOutcome.Completed(new SyncResult(
                     SyncOutcome.UpToDate,
                     "Локальные данные и GitHub уже совпадают.",
-                    remote.CommitSha);
+                    remote.CommitSha));
 
             case SnapshotSyncAction.Conflict:
-                return new SyncResult(
+                return AttemptOutcome.Completed(new SyncResult(
                     SyncOutcome.Conflict,
-                    "Локальные и удалённые данные изменились одновременно. P1 остановил синхронизацию без потери данных.");
+                    ConcurrentChangeMessage));
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(action), action, null);
@@ -189,5 +416,21 @@ public sealed class GitHubSyncService(
             > 40 => normalized[..40],
             _ => normalized,
         };
+    }
+
+    private enum AttemptKind
+    {
+        Completed,
+        CasMiss,
+        HeadRace,
+    }
+
+    private readonly record struct AttemptOutcome(AttemptKind Kind, SyncResult? Result)
+    {
+        public static AttemptOutcome Completed(SyncResult result) => new(AttemptKind.Completed, result);
+
+        public static AttemptOutcome CasMiss() => new(AttemptKind.CasMiss, null);
+
+        public static AttemptOutcome HeadRace() => new(AttemptKind.HeadRace, null);
     }
 }

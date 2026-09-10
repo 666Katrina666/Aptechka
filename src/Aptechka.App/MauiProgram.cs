@@ -46,7 +46,7 @@ public static class MauiProgram
             BaseAddress = new Uri("https://api.github.com/"),
             Timeout = TimeSpan.FromSeconds(30),
         });
-        builder.Services.AddSingleton<GitHubDataClient>();
+        builder.Services.AddSingleton<IGitHubDataClient, GitHubDataClient>();
         builder.Services.AddSingleton(new SyncStateStore(
             Path.Combine(FileSystem.AppDataDirectory, "sync", "state.json")));
         builder.Services.AddSingleton<ISyncService, GitHubSyncService>();

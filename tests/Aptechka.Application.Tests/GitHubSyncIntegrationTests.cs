@@ -144,7 +144,8 @@ public sealed class GitHubSyncIntegrationTests
             {
                 BaseAddress = new Uri("https://api.github.com/"),
                 Timeout = TimeSpan.FromSeconds(30),
-            }));
+            }),
+            clock);
 
         return new IntegrationContext(
             root,

@@ -7,7 +7,7 @@ using Aptechka.Infrastructure.Storage;
 
 namespace Aptechka.Infrastructure.GitHub;
 
-public sealed class GitHubDataClient(HttpClient httpClient)
+public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
 {
     private const string ApiVersion = "2026-03-10";
 
@@ -153,12 +153,13 @@ public sealed class GitHubDataClient(HttpClient httpClient)
             cancellationToken);
         var commit = await DeserializeAsync<GitObjectResponse>(commitResponse, cancellationToken);
 
-        await SendRequiredAsync(
+        using var referenceResponse = await SendRequiredAsync(
             HttpMethod.Patch,
             $"{prefix}/git/refs/heads/{Escape(target.Branch)}",
             accessToken,
             new { sha = commit.Sha, force = false },
-            cancellationToken);
+            cancellationToken,
+            headRaceOnConflict: true);
 
         return commit.Sha;
     }
@@ -168,8 +169,16 @@ public sealed class GitHubDataClient(HttpClient httpClient)
         string path,
         string accessToken,
         object? body,
-        CancellationToken cancellationToken) =>
-        await SendAsync(method, path, accessToken, body, false, cancellationToken)
+        CancellationToken cancellationToken,
+        bool headRaceOnConflict = false) =>
+        await SendAsync(
+            method,
+            path,
+            accessToken,
+            body,
+            false,
+            cancellationToken,
+            headRaceOnConflict)
         ?? throw new GitHubApiException(404, "Репозиторий или ветка не найдены.");
 
     private async Task<HttpResponseMessage?> SendAsync(
@@ -178,7 +187,8 @@ public sealed class GitHubDataClient(HttpClient httpClient)
         string accessToken,
         object? body,
         bool allowMissingRepository,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool headRaceOnConflict = false)
     {
         using var request = new HttpRequestMessage(method, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -202,8 +212,14 @@ public sealed class GitHubDataClient(HttpClient httpClient)
             return null;
         }
 
-        var message = await ReadErrorMessageAsync(response, cancellationToken);
         var statusCode = (int)response.StatusCode;
+        if (headRaceOnConflict && statusCode is 409 or 422)
+        {
+            response.Dispose();
+            throw new GitHubHeadChangedException();
+        }
+
+        var message = await ReadErrorMessageAsync(response, cancellationToken);
         response.Dispose();
         if (statusCode == 404)
         {
