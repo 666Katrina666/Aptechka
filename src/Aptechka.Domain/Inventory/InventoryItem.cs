@@ -22,6 +22,7 @@ public sealed record InventoryItem(
         string id,
         DateTimeOffset now,
         string name,
+        IReadOnlyList<string> aliases,
         InventoryItemCategory category,
         IReadOnlyList<string> activeIngredients,
         string? form,
@@ -36,7 +37,7 @@ public sealed record InventoryItem(
             now,
             null,
             NormalizeRequired(name),
-            [],
+            NormalizeList(aliases),
             category,
             NormalizeList(activeIngredients),
             NormalizeOptional(form),
@@ -52,6 +53,7 @@ public sealed record InventoryItem(
     public InventoryItem Update(
         DateTimeOffset now,
         string name,
+        IReadOnlyList<string> aliases,
         InventoryItemCategory category,
         IReadOnlyList<string> activeIngredients,
         string? form,
@@ -64,12 +66,31 @@ public sealed record InventoryItem(
             Revision = Revision + 1,
             UpdatedAt = now,
             Name = NormalizeRequired(name),
+            Aliases = NormalizeList(aliases),
             Category = category,
             ActiveIngredients = NormalizeList(activeIngredients),
             Form = NormalizeOptional(form),
             Strength = NormalizeOptional(strength),
             Description = NormalizeOptional(description),
             KeepInStock = keepInStock,
+        };
+
+        item.EnsureValid();
+        return item;
+    }
+
+    public InventoryItem Delete(DateTimeOffset now)
+    {
+        if (DeletedAt is not null)
+        {
+            return this;
+        }
+
+        var item = this with
+        {
+            Revision = Revision + 1,
+            UpdatedAt = now,
+            DeletedAt = now,
         };
 
         item.EnsureValid();
@@ -96,6 +117,11 @@ public sealed record InventoryItem(
         if (UpdatedAt < CreatedAt)
         {
             throw new InvalidOperationException("Дата обновления не может быть раньше даты создания.");
+        }
+
+        if (DeletedAt is { } deletedAt && deletedAt < CreatedAt)
+        {
+            throw new InvalidOperationException("Дата удаления не может быть раньше даты создания.");
         }
     }
 

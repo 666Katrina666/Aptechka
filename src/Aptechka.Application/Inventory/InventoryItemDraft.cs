@@ -4,6 +4,7 @@ namespace Aptechka.Application.Inventory;
 
 public sealed record InventoryItemDraft(
     string Name,
+    IReadOnlyList<string> Aliases,
     InventoryItemCategory Category,
     IReadOnlyList<string> ActiveIngredients,
     string? Form,

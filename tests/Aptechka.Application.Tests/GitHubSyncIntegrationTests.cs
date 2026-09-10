@@ -46,8 +46,9 @@ public sealed class GitHubSyncIntegrationTests
 
         await using var first = CreateContext();
         await first.SyncService.SyncAsync(settings.Target, settings.Token, "integration-first");
-        await first.InventoryService.SavePrototypeItemAsync(new InventoryItemDraft(
+        await first.InventoryService.CreateAsync(new InventoryItemDraft(
             "P1 integration check",
+            [],
             InventoryItemCategory.MedicalSupply,
             [],
             null,
@@ -66,7 +67,7 @@ public sealed class GitHubSyncIntegrationTests
             settings.Target,
             settings.Token,
             "integration-second");
-        var item = await second.InventoryService.GetPrototypeItemAsync();
+        var item = Assert.Single(await second.InventoryService.GetCatalogAsync());
 
         Assert.Equal(SyncOutcome.Pulled, pulled.Outcome);
         Assert.Equal("P1 integration check", item?.Name);
