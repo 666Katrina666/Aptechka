@@ -29,14 +29,17 @@ Windows → private GitHub repository → Android → private GitHub repository 
 Другие разрешения приложению не нужны. Скопируй токен сразу после создания:
 GitHub больше не покажет его полностью.
 
-### 2. Проверить Windows
+### 2. Установить и проверить Windows
 
-Запусти:
+Из корня репозитория запусти установочный скрипт:
 
 ```powershell
-dotnet run --project src/Aptechka.App/Aptechka.App.csproj `
-  -f net9.0-windows10.0.19041.0
+.\scripts\install-windows.ps1
 ```
+
+Он собирает Release-версию, копирует её в
+`%LocalAppData%\Programs\Aptechka` и создаёт ярлык «Аптечка» на рабочем столе.
+Для повседневного запуска используй ярлык, а не файл из `bin\Debug`.
 
 В приложении:
 
@@ -73,6 +76,10 @@ $aptechkaApk = Resolve-Path `
 Если USB-отладку использовать не хочется, APK можно передать на телефон вручную
 и разрешить установку из выбранного файлового менеджера.
 
+После установки «Аптечка» появится в списке приложений Android. Чтобы закрепить
+её на домашнем экране, зажми значок и перетащи его на нужное место либо выбери
+«Добавить на главный экран» — точное название зависит от лаунчера телефона.
+
 ### 4. Проверить Android → Windows
 
 1. На чистом Android не заполняй карточку.
@@ -102,11 +109,15 @@ repository, and Android. Create a fine-grained token restricted to
 `666Katrina666/aptechka-data` with repository Contents set to Read and write.
 Each device stores its own copy in platform Secure Storage.
 
-On a fresh Windows installation, enter the token and synchronize once to import
-the existing manifest. Then save an item locally and synchronize it. Install the
+Run `scripts/install-windows.ps1` to publish the Release build into
+`%LocalAppData%\Programs\Aptechka` and create the desktop shortcut. On a fresh
+Windows installation, enter the token and synchronize once to import the
+existing manifest. Then save an item locally and synchronize it. Install the
 signed debug APK, open a clean Android installation, enter the token, and
 synchronize without creating an item first. Edit the pulled item on Android,
-save and synchronize, then synchronize Windows again.
+save and synchronize, then synchronize Windows again. Android exposes the app
+in its launcher after installation; pin it to the home screen using the
+launcher menu.
 
 P1 never overwrites concurrent edits: it stops with a conflict. Report the
 platform, visible status text, failing step, and whether a data commit appeared.
