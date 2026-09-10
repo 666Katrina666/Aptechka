@@ -124,7 +124,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 
 > Важно: нужен **новый** APK (~100 МБ). Старый маленький (~14 МБ) после
 > запуска сразу закрывался — в нём не было встроенных библиотек .NET.
-> Если приложение уже стояло и падало, удали старое «Аптечка» и поставь заново.
+> Для обычного обновления текущей сборки не удаляй приложение: см. шаг 3.5.
 
 #### 3.1. Где лежит файл установки
 
@@ -184,6 +184,40 @@ $aptechkaApk = Resolve-Path `
 
 Если `adb devices` пустой — используй ручную установку из шагов 3.1–3.3.
 
+### 3.5. Как обновить уже установленную «Аптечку»
+
+Не удаляй приложение перед обновлением: удаление сотрёт локальные данные
+аптечки и токен в Secure Storage, после чего синхронизацию придётся
+настраивать заново.
+
+`ApplicationId` остаётся `io.github.vakineti.aptechka`. Каждый следующий APK
+должен быть подписан **тем же ключом**, а `ApplicationVersion` должна быть
+**больше**, чем у установленной копии (сейчас 2 для версии 1.1.0).
+
+#### Через USB (`adb install -r`)
+
+```powershell
+$aptechkaAndroidSdk = 'C:\Program Files (x86)\Android\android-sdk'
+$aptechkaApk = Resolve-Path `
+  'src\Aptechka.App\bin\Debug\net9.0-android\io.github.vakineti.aptechka-Signed.apk'
+& "$aptechkaAndroidSdk\platform-tools\adb.exe" install -r $aptechkaApk
+```
+
+Флаг `-r` ставит APK поверх текущей установки. Не используй `adb uninstall`
+и `pm clear`.
+
+#### Вручную на телефоне
+
+1. Передай новый `-Signed.apk` на телефон (Telegram, диск или USB).
+2. Открой файл.
+3. Если «Аптечка» уже установлена, Android предложит **«Обновить»** —
+   выбери это, а не удаление.
+4. Открой приложение и проверь, что каталог и сохранённый токен на месте.
+
+Старый маленький APK (~14 МБ) без embedded assemblies после запуска сразу
+закрывался. Его нужно было заменить полностью. Обычные обновления текущей
+сборки (~100 МБ) ставятся поверх без удаления.
+
 ### 4. Проверить Android → Windows
 
 1. Открой «Аптечку» на телефоне.
@@ -224,9 +258,10 @@ card, then save locally and synchronize again. Confirm `aptechka.json` and
 For Android, send
 `src\Aptechka.App\bin\Debug\net9.0-android\io.github.vakineti.aptechka-Signed.apk`
 to the phone (Telegram, Drive, or USB file copy), allow install from that
-source, and open «Аптечка». USB/`adb` install is optional. On a clean Android
-install, enter the same token, synchronize first, edit, save, synchronize, then
-synchronize Windows again.
+source, and open «Аптечка». USB/`adb` install is optional. To update an
+already installed build, use `adb install -r` or open the new APK and choose
+Update; do not uninstall, or local data and the saved token will be lost.
+Each new APK needs a higher `ApplicationVersion` and the same signing key.
 
 P1 never overwrites concurrent edits: it stops with a conflict. Report the
 platform, visible status text, failing step, and whether a data commit appeared.
