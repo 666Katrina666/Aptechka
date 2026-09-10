@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.PackageEditorPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:PackageEditorViewModel"
+    Title="{Binding Title}">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="16" Spacing="12" MaximumWidthRequest="720">
+            <Label
+                IsVisible="{Binding HasError}"
+                Text="{Binding ErrorMessage}"
+                TextColor="#B3261E" />
+
+            <Label Style="{StaticResource Body}" Text="Подпись" />
+            <Entry Placeholder="Необязательно, например блистер" Text="{Binding Label}" />
+
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <Label Grid.Column="0" VerticalOptions="Center" Text="Указать срок годности" />
+                <Switch Grid.Column="1" IsToggled="{Binding HasExpiration}" />
+            </Grid>
+            <Label
+                FontSize="12"
+                LineBreakMode="WordWrap"
+                Text="Если срока нет, выключи переключатель."
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+
+            <VerticalStackLayout IsVisible="{Binding HasExpiration}" Spacing="12">
+                <Label Style="{StaticResource Body}" Text="Точность срока" />
+                <Picker ItemsSource="{Binding PrecisionOptions}" SelectedItem="{Binding SelectedPrecision}" />
+                <Label Style="{StaticResource Body}" Text="Дата на упаковке" />
+                <DatePicker Date="{Binding ExpirationPickerDate}" />
+                <Label
+                    FontSize="12"
+                    LineBreakMode="WordWrap"
+                    Text="{Binding MonthHint}"
+                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+            </VerticalStackLayout>
+
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <Label Grid.Column="0" VerticalOptions="Center" Text="Указать дату вскрытия" />
+                <Switch Grid.Column="1" IsToggled="{Binding HasOpenedDate}" />
+            </Grid>
+            <DatePicker Date="{Binding OpenedPickerDate}" IsVisible="{Binding HasOpenedDate}" />
+
+            <Label Style="{StaticResource Body}" Text="Срок после вскрытия, дни" />
+            <Entry
+                Keyboard="Numeric"
+                Placeholder="пусто, если не нужен"
+                Text="{Binding ShelfLifeText}" />
+
+            <Label Style="{StaticResource Body}" Text="Состояние запаса" />
+            <Picker ItemsSource="{Binding StockOptions}" SelectedItem="{Binding SelectedStock}" />
+
+            <Label Style="{StaticResource Body}" Text="Заметка" />
+            <Editor
+                AutoSize="TextChanges"
+                MinimumHeightRequest="88"
+                Placeholder="Необязательная заметка об упаковке"
+                Text="{Binding Note}" />
+
+            <Button Command="{Binding SaveCommand}" Text="Сохранить" />
+            <Button
+                BackgroundColor="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray600}}"
+                Clicked="OnArchiveClicked"
+                IsVisible="{Binding IsEditing}"
+                Text="Архивировать"
+                TextColor="{AppThemeBinding Light={StaticResource Gray900}, Dark={StaticResource White}}" />
+
+            <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

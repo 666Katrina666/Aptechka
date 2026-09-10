@@ -6,9 +6,22 @@ using Aptechka.Domain.Inventory;
 
 namespace Aptechka.App.ViewModels;
 
+public sealed record PackageListRow(
+    string Id,
+    string Title,
+    string StockState,
+    string Expiration,
+    string? Opened,
+    bool IsExpired)
+{
+    public bool HasOpened => !string.IsNullOrEmpty(Opened);
+}
+
 public sealed class ItemEditorViewModel : INotifyPropertyChanged
 {
     private readonly InventoryService inventoryService;
+    private readonly PackageService packageService;
+    private readonly IClock clock;
     private string? itemId;
     private string title = "Новая позиция";
     private string name = string.Empty;
@@ -23,10 +36,16 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
     private bool isBusy;
     private bool isEditing;
     private bool createDespiteNameConflict;
+    private IReadOnlyList<PackageListRow> packages = [];
 
-    public ItemEditorViewModel(InventoryService inventoryService)
+    public ItemEditorViewModel(
+        InventoryService inventoryService,
+        PackageService packageService,
+        IClock clock)
     {
         this.inventoryService = inventoryService;
+        this.packageService = packageService;
+        this.clock = clock;
         CategoryOptions =
         [
             new("Лекарство", InventoryItemCategory.Medicine),
@@ -45,6 +64,8 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
     public IReadOnlyList<CategoryOption> CategoryOptions { get; }
 
     public ICommand SaveCommand { get; }
+
+    public string? ItemId => itemId;
 
     public string Title
     {
@@ -103,8 +124,31 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
     public bool IsEditing
     {
         get => isEditing;
-        private set => SetField(ref isEditing, value);
+        private set
+        {
+            if (SetField(ref isEditing, value))
+            {
+                OnPropertyChanged(nameof(HasNoPackages));
+                OnPropertyChanged(nameof(CanMutatePackages));
+            }
+        }
     }
+
+    public IReadOnlyList<PackageListRow> Packages
+    {
+        get => packages;
+        private set
+        {
+            if (SetField(ref packages, value))
+            {
+                OnPropertyChanged(nameof(HasNoPackages));
+            }
+        }
+    }
+
+    public bool HasNoPackages => IsEditing && Packages.Count == 0;
+
+    public bool CanMutatePackages => IsEditing && !IsBusy;
 
     public string? ErrorMessage
     {
@@ -130,6 +174,7 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
                 return;
             }
 
+            OnPropertyChanged(nameof(CanMutatePackages));
             ((Command)SaveCommand).ChangeCanExecute();
         }
     }
@@ -149,6 +194,7 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
         Description = null;
         KeepInStock = false;
         SelectedCategory = CategoryOptions[0];
+        Packages = [];
 
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -173,6 +219,33 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
         Strength = item.Strength;
         Description = item.Description;
         KeepInStock = item.KeepInStock;
+        await RefreshPackagesAsync();
+    }
+
+    public async Task RefreshPackagesAsync()
+    {
+        if (itemId is null)
+        {
+            Packages = [];
+            return;
+        }
+
+        try
+        {
+            var loaded = await packageService.GetPackagesForItemAsync(itemId);
+            var today = clock.Today;
+            Packages = loaded.Select(package => new PackageListRow(
+                package.Id,
+                string.IsNullOrEmpty(package.Label) ? "Упаковка" : package.Label,
+                PackageText.FormatStockState(package.StockState),
+                PackageText.EffectiveExpiration(package),
+                PackageText.Opened(package),
+                ItemStock.GetUsability(package, today) == PackageUsability.Expired)).ToArray();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
     }
 
     public async Task ArchiveAsync()
@@ -203,6 +276,54 @@ public sealed class ItemEditorViewModel : INotifyPropertyChanged
     {
         createDespiteNameConflict = true;
         return SaveAsync();
+    }
+
+    public async Task MarkLowAsync(string id)
+    {
+        if (!CanMutatePackages || string.IsNullOrEmpty(id))
+        {
+            return;
+        }
+
+        IsBusy = true;
+        ErrorMessage = null;
+        try
+        {
+            await packageService.MarkLowAsync(id);
+            await RefreshPackagesAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task MarkDepletedAsync(string id)
+    {
+        if (!CanMutatePackages || string.IsNullOrEmpty(id))
+        {
+            return;
+        }
+
+        IsBusy = true;
+        ErrorMessage = null;
+        try
+        {
+            await packageService.MarkDepletedAsync(id);
+            await RefreshPackagesAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     private async Task SaveAsync()

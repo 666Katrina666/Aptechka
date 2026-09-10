@@ -13,9 +13,19 @@ public sealed record CatalogItemRow(
     string Name,
     string Category,
     string? Details,
-    bool KeepInStock)
+    bool KeepInStock,
+    string Availability,
+    string? UsablePackages,
+    string? NearestExpiration,
+    string? ExpiredWarning)
 {
     public bool HasDetails => !string.IsNullOrEmpty(Details);
+
+    public bool HasUsablePackages => !string.IsNullOrEmpty(UsablePackages);
+
+    public bool HasNearestExpiration => !string.IsNullOrEmpty(NearestExpiration);
+
+    public bool HasExpiredWarning => !string.IsNullOrEmpty(ExpiredWarning);
 }
 
 public sealed class MainViewModel : INotifyPropertyChanged
@@ -25,6 +35,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private const string BranchPreference = "sync-branch";
 
     private readonly InventoryService inventoryService;
+    private readonly PackageService packageService;
     private readonly ISyncService syncService;
     private readonly ISecureTokenStore tokenStore;
     private int refreshEpoch;
@@ -40,10 +51,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public MainViewModel(
         InventoryService inventoryService,
+        PackageService packageService,
         ISyncService syncService,
         ISecureTokenStore tokenStore)
     {
         this.inventoryService = inventoryService;
+        this.packageService = packageService;
         this.syncService = syncService;
         this.tokenStore = tokenStore;
 
@@ -187,8 +200,37 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            Items = catalog.Select(ToRow).ToArray();
-            if (Status == "Локальные данные ещё не загружены.")
+            var rows = new List<CatalogItemRow>(catalog.Count);
+            var failedSummaries = 0;
+            foreach (var item in catalog)
+            {
+                ItemStockSummary? summary = null;
+                try
+                {
+                    summary = await packageService.GetItemStockSummaryAsync(item.Id);
+                }
+                catch
+                {
+                    failedSummaries++;
+                }
+
+                if (epoch != refreshEpoch)
+                {
+                    return;
+                }
+
+                rows.Add(ToRow(item, summary));
+            }
+
+            Items = rows;
+            if (failedSummaries > 0)
+            {
+                Status = failedSummaries == 1
+                    ? "Не удалось загрузить наличие для одной позиции."
+                    : $"Не удалось загрузить наличие для {failedSummaries} позиций.";
+            }
+            else if (Status == "Локальные данные ещё не загружены." ||
+                     Status.StartsWith("Не удалось загрузить наличие", StringComparison.Ordinal))
             {
                 Status = Items.Count == 0
                     ? "Каталог пуст. Добавь позицию или синхронизируй данные."
@@ -254,7 +296,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private static CatalogItemRow ToRow(InventoryItem item)
+    private static CatalogItemRow ToRow(InventoryItem item, ItemStockSummary? summary)
     {
         var details = string.Join(
             ", ",
@@ -270,7 +312,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 _ => item.Category.ToString(),
             },
             string.IsNullOrEmpty(details) ? null : details,
-            item.KeepInStock);
+            item.KeepInStock,
+            summary is null ? "Наличие не загружено" : PackageText.Availability(summary.Availability),
+            summary is null ? null : PackageText.UsablePackageCount(summary.UsablePackageCount),
+            summary is null ? null : PackageText.NearestExpiration(summary.NearestExpirationDate),
+            summary is null ? null : PackageText.ExpiredWarning(summary.ExpiredPackageCount));
     }
 
     private void SaveSyncPreferences()

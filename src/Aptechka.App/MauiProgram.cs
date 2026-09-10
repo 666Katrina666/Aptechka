@@ -55,6 +55,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<MainPage>();
         builder.Services.AddTransient<ItemEditorViewModel>();
         builder.Services.AddTransient<ItemEditorPage>();
+        builder.Services.AddTransient<PackageEditorViewModel>();
+        builder.Services.AddTransient<PackageEditorPage>();
 
         return builder.Build();
     }
