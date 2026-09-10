@@ -8,6 +8,16 @@ using Aptechka.Domain.Inventory;
 
 namespace Aptechka.App.ViewModels;
 
+public sealed record CatalogItemRow(
+    string Id,
+    string Name,
+    string Category,
+    string? Details,
+    bool KeepInStock)
+{
+    public bool HasDetails => !string.IsNullOrEmpty(Details);
+}
+
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private const string OwnerPreference = "sync-owner";
@@ -17,13 +27,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly InventoryService inventoryService;
     private readonly ISyncService syncService;
     private readonly ISecureTokenStore tokenStore;
-    private string name = string.Empty;
-    private string activeIngredients = string.Empty;
-    private string? form;
-    private string? strength;
-    private string? description;
-    private bool keepInStock;
-    private CategoryOption selectedCategory;
+    private int refreshEpoch;
+    private string searchQuery = string.Empty;
+    private IReadOnlyList<CatalogItemRow> items = [];
     private string owner;
     private string repository;
     private string branch;
@@ -41,67 +47,52 @@ public sealed class MainViewModel : INotifyPropertyChanged
         this.syncService = syncService;
         this.tokenStore = tokenStore;
 
-        CategoryOptions =
-        [
-            new("Лекарство", InventoryItemCategory.Medicine),
-            new("Медицинский расходник", InventoryItemCategory.MedicalSupply),
-        ];
-        selectedCategory = CategoryOptions[0];
         owner = Preferences.Default.Get(OwnerPreference, "666Katrina666");
         repository = Preferences.Default.Get(RepositoryPreference, "aptechka-data");
         branch = Preferences.Default.Get(BranchPreference, "main");
 
-        SaveCommand = new Command(async () => await SaveAsync(), () => !IsBusy);
         SyncCommand = new Command(async () => await SyncAsync(), () => !IsBusy);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public IReadOnlyList<CategoryOption> CategoryOptions { get; }
-    public ICommand SaveCommand { get; }
     public ICommand SyncCommand { get; }
 
-    public string Name
+    public string SearchQuery
     {
-        get => name;
-        set => SetField(ref name, value);
+        get => searchQuery;
+        set
+        {
+            if (!SetField(ref searchQuery, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(EmptyMessage));
+            _ = RefreshItemsAsync();
+        }
     }
 
-    public CategoryOption SelectedCategory
+    public IReadOnlyList<CatalogItemRow> Items
     {
-        get => selectedCategory;
-        set => SetField(ref selectedCategory, value);
+        get => items;
+        private set
+        {
+            if (!SetField(ref items, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(IsEmpty));
+            OnPropertyChanged(nameof(EmptyMessage));
+        }
     }
 
-    public string ActiveIngredients
-    {
-        get => activeIngredients;
-        set => SetField(ref activeIngredients, value);
-    }
+    public bool IsEmpty => Items.Count == 0;
 
-    public string? Form
-    {
-        get => form;
-        set => SetField(ref form, value);
-    }
-
-    public string? Strength
-    {
-        get => strength;
-        set => SetField(ref strength, value);
-    }
-
-    public string? Description
-    {
-        get => description;
-        set => SetField(ref description, value);
-    }
-
-    public bool KeepInStock
-    {
-        get => keepInStock;
-        set => SetField(ref keepInStock, value);
-    }
+    public string EmptyMessage => string.IsNullOrWhiteSpace(SearchQuery)
+        ? "Позиций пока нет. Нажми «Добавить», чтобы создать первую."
+        : "Ничего не найдено.";
 
     public string Owner
     {
@@ -159,58 +150,43 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 return;
             }
 
-            ((Command)SaveCommand).ChangeCanExecute();
             ((Command)SyncCommand).ChangeCanExecute();
         }
     }
 
     public async Task LoadAsync()
     {
-        if (IsBusy)
-        {
-            return;
-        }
-
-        IsBusy = true;
-        try
-        {
-            HasSavedToken = await tokenStore.HasTokenAsync();
-            var item = await inventoryService.GetPrototypeItemAsync();
-            PopulateItem(item);
-            Status = item is null
-                ? "Позиции пока нет. Заполни карточку и сохрани её локально."
-                : $"Загружена локальная ревизия {item.Revision}.";
-        }
-        catch (Exception exception)
-        {
-            Status = $"Не удалось загрузить локальные данные: {exception.Message}";
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        HasSavedToken = await tokenStore.HasTokenAsync();
+        await RefreshItemsAsync();
     }
 
-    private async Task SaveAsync()
+    public async Task RefreshItemsAsync()
     {
-        if (IsBusy)
-        {
-            return;
-        }
-
-        IsBusy = true;
+        var epoch = Interlocked.Increment(ref refreshEpoch);
         try
         {
-            var item = await SaveLocalCoreAsync();
-            Status = $"Сохранено локально. Ревизия {item.Revision}.";
+            var catalog = await inventoryService.SearchAsync(SearchQuery);
+            if (epoch != refreshEpoch)
+            {
+                return;
+            }
+
+            Items = catalog.Select(ToRow).ToArray();
+            if (Status == "Локальные данные ещё не загружены.")
+            {
+                Status = Items.Count == 0
+                    ? "Каталог пуст. Добавь позицию или синхронизируй данные."
+                    : $"Загружен каталог: {Items.Count}.";
+            }
         }
         catch (Exception exception)
         {
-            Status = $"Не удалось сохранить: {exception.Message}";
-        }
-        finally
-        {
-            IsBusy = false;
+            if (epoch != refreshEpoch)
+            {
+                return;
+            }
+
+            Status = $"Не удалось загрузить каталог: {exception.Message}";
         }
     }
 
@@ -249,11 +225,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 DeviceInfo.Name,
                 CancellationToken.None);
 
-            if (result.Outcome is SyncOutcome.Pulled)
-            {
-                PopulateItem(await inventoryService.GetPrototypeItemAsync());
-            }
-
+            await RefreshItemsAsync();
             Status = result.Message;
         }
         catch (Exception exception)
@@ -266,36 +238,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private async Task<InventoryItem> SaveLocalCoreAsync()
+    private static CatalogItemRow ToRow(InventoryItem item)
     {
-        var ingredients = ActiveIngredients
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var draft = new InventoryItemDraft(
-            Name,
-            SelectedCategory.Value,
-            ingredients,
-            Form,
-            Strength,
-            Description,
-            KeepInStock);
+        var details = string.Join(
+            ", ",
+            new[] { item.Form, item.Strength }.Where(static value => !string.IsNullOrEmpty(value)));
 
-        return await inventoryService.SavePrototypeItemAsync(draft);
-    }
-
-    private void PopulateItem(InventoryItem? item)
-    {
-        if (item is null)
-        {
-            return;
-        }
-
-        Name = item.Name;
-        SelectedCategory = CategoryOptions.Single(option => option.Value == item.Category);
-        ActiveIngredients = string.Join(", ", item.ActiveIngredients);
-        Form = item.Form;
-        Strength = item.Strength;
-        Description = item.Description;
-        KeepInStock = item.KeepInStock;
+        return new CatalogItemRow(
+            item.Id,
+            item.Name,
+            item.Category switch
+            {
+                InventoryItemCategory.Medicine => "Лекарство",
+                InventoryItemCategory.MedicalSupply => "Медицинский расходник",
+                _ => item.Category.ToString(),
+            },
+            string.IsNullOrEmpty(details) ? null : details,
+            item.KeepInStock);
     }
 
     private void SaveSyncPreferences()
@@ -319,9 +278,4 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-
-    public sealed record CategoryOption(string Name, InventoryItemCategory Value)
-    {
-        public override string ToString() => Name;
-    }
 }

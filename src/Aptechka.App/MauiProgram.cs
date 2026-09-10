@@ -50,6 +50,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<ISecureTokenStore, MauiSecureTokenStore>();
         builder.Services.AddSingleton<MainViewModel>();
         builder.Services.AddSingleton<MainPage>();
+        builder.Services.AddTransient<ItemEditorViewModel>();
+        builder.Services.AddTransient<ItemEditorPage>();
 
         return builder.Build();
     }

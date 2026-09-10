@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.ItemEditorPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:ItemEditorViewModel"
+    Title="{Binding Title}">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="16" Spacing="12" MaximumWidthRequest="720">
+            <Label
+                IsVisible="{Binding HasError}"
+                Text="{Binding ErrorMessage}"
+                TextColor="#B3261E" />
+
+            <Label Style="{StaticResource Body}" Text="Название" />
+            <Entry Placeholder="Например, Ибупрофен" Text="{Binding Name}" />
+
+            <Label Style="{StaticResource Body}" Text="Алиасы через запятую" />
+            <Entry Placeholder="Нурофен" Text="{Binding Aliases}" />
+
+            <Label Style="{StaticResource Body}" Text="Категория" />
+            <Picker ItemsSource="{Binding CategoryOptions}" SelectedItem="{Binding SelectedCategory}" />
+
+            <Label Style="{StaticResource Body}" Text="Действующие вещества через запятую" />
+            <Entry Placeholder="ибупрофен" Text="{Binding ActiveIngredients}" />
+
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                <VerticalStackLayout Grid.Column="0" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Форма" />
+                    <Entry Placeholder="таблетки" Text="{Binding Form}" />
+                </VerticalStackLayout>
+                <VerticalStackLayout Grid.Column="1" Spacing="6">
+                    <Label Style="{StaticResource Body}" Text="Дозировка / концентрация" />
+                    <Entry Placeholder="200 мг" Text="{Binding Strength}" />
+                </VerticalStackLayout>
+            </Grid>
+
+            <Label Style="{StaticResource Body}" Text="Описание" />
+            <Editor
+                AutoSize="TextChanges"
+                MinimumHeightRequest="88"
+                Placeholder="Короткая личная заметка"
+                Text="{Binding Description}" />
+
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <Label Grid.Column="0" VerticalOptions="Center" Text="Всегда иметь дома" />
+                <Switch Grid.Column="1" IsToggled="{Binding KeepInStock}" />
+            </Grid>
+
+            <Button Command="{Binding SaveCommand}" Text="Сохранить" />
+            <Button
+                BackgroundColor="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray600}}"
+                Clicked="OnArchiveClicked"
+                IsVisible="{Binding IsEditing}"
+                Text="Архивировать"
+                TextColor="{AppThemeBinding Light={StaticResource Gray900}, Dark={StaticResource White}}" />
+
+            <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

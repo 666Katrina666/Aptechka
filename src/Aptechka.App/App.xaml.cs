@@ -11,5 +11,5 @@ public partial class App : Microsoft.Maui.Controls.Application
     }
 
     protected override Window CreateWindow(IActivationState? activationState) =>
-        new(services.GetRequiredService<MainPage>());
+        new(new NavigationPage(services.GetRequiredService<MainPage>()));
 }
