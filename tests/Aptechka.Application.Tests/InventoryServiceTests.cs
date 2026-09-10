@@ -124,6 +124,54 @@ public sealed class InventoryServiceTests
     }
 
     [Fact]
+    public async Task ArchiveAsync_TombstonesActivePackagesBeforeTheItem()
+    {
+        var context = CreateContext();
+        var item = await context.Service.CreateAsync(Draft("Ибупрофен"));
+        var firstPackage = Package.Create(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAX",
+            Now,
+            item.Id,
+            "первая",
+            null,
+            null,
+            null,
+            null,
+            StockState.Available,
+            null);
+        var secondPackage = Package.Create(
+            "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            Now.AddMinutes(1),
+            item.Id,
+            "вторая",
+            null,
+            null,
+            null,
+            null,
+            StockState.Low,
+            null);
+        await context.Repository.SavePackageAsync(firstPackage);
+        await context.Repository.SavePackageAsync(secondPackage);
+
+        var archivedAt = Now.AddMinutes(5);
+        context.Clock.UtcNow = archivedAt;
+        var archived = await context.Service.ArchiveAsync(item.Id);
+
+        Assert.Equal(archivedAt, archived.DeletedAt);
+        Assert.Equal(
+            ["package:01ARZ3NDEKTSV4RRFFQ69G5FAX", "package:01ARZ3NDEKTSV4RRFFQ69G5FAY", $"item:{item.Id}"],
+            context.Repository.SaveOrder[^3..]);
+        Assert.All(
+            context.Repository.Packages,
+            package =>
+            {
+                Assert.Equal(archivedAt, package.DeletedAt);
+                Assert.Equal(archivedAt, package.UpdatedAt);
+                Assert.Equal(2, package.Revision);
+            });
+    }
+
+    [Fact]
     public async Task FindNameConflictsAsync_ReturnsEveryMatchingItem()
     {
         var context = CreateContext();
@@ -185,9 +233,9 @@ public sealed class InventoryServiceTests
 
     private static TestContext CreateContext()
     {
-        var repository = new InMemoryRepository();
+        var repository = new InMemoryStore();
         var clock = new StubClock(Now);
-        var service = new InventoryService(repository, clock, new StubIdGenerator());
+        var service = new InventoryService(repository, repository, clock, new StubIdGenerator());
         return new TestContext(service, repository, clock);
     }
 
@@ -199,12 +247,14 @@ public sealed class InventoryServiceTests
 
     private sealed record TestContext(
         InventoryService Service,
-        InMemoryRepository Repository,
+        InMemoryStore Repository,
         StubClock Clock);
 
-    private sealed class InMemoryRepository : IInventoryRepository
+    private sealed class InMemoryStore : IInventoryRepository, IPackageRepository
     {
         public List<InventoryItem> Items { get; } = [];
+        public List<Package> Packages { get; } = [];
+        public List<string> SaveOrder { get; } = [];
 
         public Task<IReadOnlyList<InventoryItem>> GetItemsAsync(
             CancellationToken cancellationToken = default) =>
@@ -216,6 +266,21 @@ public sealed class InventoryServiceTests
         {
             Items.RemoveAll(existing => existing.Id == item.Id);
             Items.Add(item);
+            SaveOrder.Add($"item:{item.Id}");
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<Package>> GetPackagesAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Package>>(Packages.ToArray());
+
+        public Task SavePackageAsync(
+            Package package,
+            CancellationToken cancellationToken = default)
+        {
+            Packages.RemoveAll(existing => existing.Id == package.Id);
+            Packages.Add(package);
+            SaveOrder.Add($"package:{package.Id}");
             return Task.CompletedTask;
         }
     }
@@ -223,6 +288,7 @@ public sealed class InventoryServiceTests
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
     {
         public DateTimeOffset UtcNow { get; set; } = utcNow;
+        public DateOnly Today { get; set; } = DateOnly.FromDateTime(utcNow.Date);
     }
 
     private sealed class StubIdGenerator : IIdGenerator

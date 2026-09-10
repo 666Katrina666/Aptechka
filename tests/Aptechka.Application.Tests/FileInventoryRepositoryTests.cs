@@ -162,6 +162,7 @@ public sealed class FileInventoryRepositoryTests : IDisposable
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
     {
         public DateTimeOffset UtcNow => utcNow;
+        public DateOnly Today => DateOnly.FromDateTime(utcNow.Date);
     }
 
     private sealed class SequenceIdGenerator : IIdGenerator

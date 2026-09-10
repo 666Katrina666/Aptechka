@@ -4,6 +4,7 @@ namespace Aptechka.Application.Inventory;
 
 public sealed class InventoryService(
     IInventoryRepository repository,
+    IPackageRepository packages,
     IClock clock,
     IIdGenerator idGenerator)
 {
@@ -106,7 +107,15 @@ public sealed class InventoryService(
         CancellationToken cancellationToken = default)
     {
         var existing = await GetRequiredItemAsync(id, cancellationToken);
-        var item = existing.Delete(clock.UtcNow);
+        var now = clock.UtcNow;
+        var itemPackages = await packages.GetPackagesAsync(cancellationToken);
+        foreach (var package in itemPackages.Where(package =>
+                     package.ItemId == id && package.DeletedAt is null))
+        {
+            await packages.SavePackageAsync(package.Delete(now), cancellationToken);
+        }
+
+        var item = existing.Delete(now);
         await repository.SaveItemAsync(item, cancellationToken);
         return item;
     }

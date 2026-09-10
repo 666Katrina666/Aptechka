@@ -82,6 +82,7 @@ public sealed class GitHubSyncIntegrationTests
             Path.Combine(root, "data"),
             clock,
             idGenerator);
+        var packages = new InMemoryPackageRepository();
         var syncService = new GitHubSyncService(
             repository,
             new SyncStateStore(Path.Combine(root, "sync", "state.json")),
@@ -94,7 +95,7 @@ public sealed class GitHubSyncIntegrationTests
         return new IntegrationContext(
             root,
             repository,
-            new InventoryService(repository, clock, idGenerator),
+            new InventoryService(repository, packages, clock, idGenerator),
             syncService);
     }
 
@@ -142,5 +143,17 @@ public sealed class GitHubSyncIntegrationTests
 
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class InMemoryPackageRepository : IPackageRepository
+    {
+        public Task<IReadOnlyList<Package>> GetPackagesAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<Package>>([]);
+
+        public Task SavePackageAsync(
+            Package package,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 }
