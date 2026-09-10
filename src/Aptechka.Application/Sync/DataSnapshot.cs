@@ -6,4 +6,22 @@ public sealed record DataSnapshot(IReadOnlyDictionary<string, byte[]> Files)
         new Dictionary<string, byte[]>(StringComparer.Ordinal));
 
     public bool IsEmpty => Files.Count == 0;
+
+    public bool HasSameFiles(DataSnapshot other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        if (Files.Count != other.Files.Count)
+        {
+            return false;
+        }
+
+        return Files.All(pair =>
+            other.Files.TryGetValue(pair.Key, out var content) &&
+            pair.Value.AsSpan().SequenceEqual(content));
+    }
 }

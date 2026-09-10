@@ -244,6 +244,72 @@ public sealed class FileInventoryRepositoryTests : IDisposable
                 ($"packages/{FirstPackageId}.json", PackageJson(FirstPackageId, FirstId, deleted: false)))));
     }
 
+    [Fact]
+    public async Task TryReplaceAsync_ReplacesWhenExpectedMatchesCurrent()
+    {
+        var repository = CreateRepository();
+        var original = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)));
+        var replacement = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Нурофен", deleted: false)));
+        await repository.ReplaceAsync(original);
+
+        var replaced = await repository.TryReplaceAsync(original, replacement);
+        var loaded = await repository.ReadAsync();
+
+        Assert.True(replaced);
+        Assert.True(loaded.HasSameFiles(replacement));
+        Assert.Empty(Directory.EnumerateFiles(rootPath, "*.tmp", SearchOption.AllDirectories));
+        Assert.Empty(Directory.EnumerateDirectories(
+            Path.GetDirectoryName(rootPath)!,
+            Path.GetFileName(rootPath) + ".staging-*"));
+    }
+
+    [Fact]
+    public async Task TryReplaceAsync_KeepsCurrentWhenExpectedDiffers()
+    {
+        var repository = CreateRepository();
+        var original = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)));
+        var stale = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Нурофен", deleted: false)));
+        var attempted = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{SecondId}.json", ItemJson(SecondId, "Вата", deleted: false)));
+        await repository.ReplaceAsync(original);
+
+        var replaced = await repository.TryReplaceAsync(stale, attempted);
+        var loaded = await repository.ReadAsync();
+
+        Assert.False(replaced);
+        Assert.True(loaded.HasSameFiles(original));
+        Assert.False(File.Exists(Path.Combine(rootPath, "items", $"{SecondId}.json")));
+        Assert.Empty(Directory.EnumerateDirectories(
+            Path.GetDirectoryName(rootPath)!,
+            Path.GetFileName(rootPath) + ".staging-*"));
+    }
+
+    [Fact]
+    public async Task TryReplaceAsync_SecondCallWithStaleExpectedFails()
+    {
+        var repository = CreateRepository();
+        var first = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)));
+        var second = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Нурофен", deleted: false)));
+        await repository.ReplaceAsync(first);
+
+        Assert.True(await repository.TryReplaceAsync(first, second));
+        Assert.False(await repository.TryReplaceAsync(first, first));
+        Assert.True((await repository.ReadAsync()).HasSameFiles(second));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(rootPath))

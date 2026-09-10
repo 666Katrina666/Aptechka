@@ -133,29 +133,7 @@ public sealed class FileInventoryRepository(
         await gate.WaitAsync(cancellationToken);
         try
         {
-            if (!Directory.Exists(rootPath))
-            {
-                return DataSnapshot.Empty;
-            }
-
-            var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-            foreach (var path in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
-            {
-                if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var relativePath = Path.GetRelativePath(rootPath, path).Replace('\\', '/');
-                if (!IsManagedPath(relativePath))
-                {
-                    continue;
-                }
-
-                files.Add(relativePath, await File.ReadAllBytesAsync(path, cancellationToken));
-            }
-
-            return new DataSnapshot(files);
+            return await ReadUnlockedAsync(cancellationToken);
         }
         finally
         {
@@ -170,73 +148,133 @@ public sealed class FileInventoryRepository(
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var parentPath = Path.GetDirectoryName(rootPath)
-                ?? throw new InvalidOperationException("У каталога данных отсутствует родитель.");
-            Directory.CreateDirectory(parentPath);
-
-            var operationId = Guid.NewGuid().ToString("N");
-            var stagingPath = $"{rootPath}.staging-{operationId}";
-            var backupPath = $"{rootPath}.backup-{operationId}";
-
-            try
-            {
-                Directory.CreateDirectory(stagingPath);
-                foreach (var (relativePath, content) in snapshot.Files)
-                {
-                    if (!IsManagedPath(relativePath))
-                    {
-                        throw new InvalidDataException($"Недопустимый путь в снимке: {relativePath}");
-                    }
-
-                    var destinationPath = Path.Combine(
-                        stagingPath,
-                        relativePath.Replace('/', Path.DirectorySeparatorChar));
-                    Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
-                    await File.WriteAllBytesAsync(destinationPath, content, cancellationToken);
-                }
-
-                await ValidateSnapshotAsync(stagingPath, cancellationToken);
-
-                if (Directory.Exists(rootPath))
-                {
-                    Directory.Move(rootPath, backupPath);
-                }
-
-                try
-                {
-                    Directory.Move(stagingPath, rootPath);
-                }
-                catch
-                {
-                    if (Directory.Exists(backupPath) && !Directory.Exists(rootPath))
-                    {
-                        Directory.Move(backupPath, rootPath);
-                    }
-
-                    throw;
-                }
-
-                if (Directory.Exists(backupPath))
-                {
-                    Directory.Delete(backupPath, true);
-                }
-            }
-            finally
-            {
-                if (Directory.Exists(stagingPath))
-                {
-                    Directory.Delete(stagingPath, true);
-                }
-
-                if (Directory.Exists(backupPath) && Directory.Exists(rootPath))
-                {
-                    Directory.Delete(backupPath, true);
-                }
-            }
+            await ReplaceUnlockedAsync(snapshot, cancellationToken);
         }
         finally
         {
             gate.Release();
+        }
+    }
+
+    public async Task<bool> TryReplaceAsync(
+        DataSnapshot expected,
+        DataSnapshot replacement,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        ArgumentNullException.ThrowIfNull(replacement);
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var current = await ReadUnlockedAsync(cancellationToken);
+            if (!current.HasSameFiles(expected))
+            {
+                return false;
+            }
+
+            await ReplaceUnlockedAsync(replacement, cancellationToken);
+            return true;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<DataSnapshot> ReadUnlockedAsync(CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            return DataSnapshot.Empty;
+        }
+
+        var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
+        {
+            if (path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var relativePath = Path.GetRelativePath(rootPath, path).Replace('\\', '/');
+            if (!IsManagedPath(relativePath))
+            {
+                continue;
+            }
+
+            files.Add(relativePath, await File.ReadAllBytesAsync(path, cancellationToken));
+        }
+
+        return new DataSnapshot(files);
+    }
+
+    private async Task ReplaceUnlockedAsync(
+        DataSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        var parentPath = Path.GetDirectoryName(rootPath)
+            ?? throw new InvalidOperationException("У каталога данных отсутствует родитель.");
+        Directory.CreateDirectory(parentPath);
+
+        var operationId = Guid.NewGuid().ToString("N");
+        var stagingPath = $"{rootPath}.staging-{operationId}";
+        var backupPath = $"{rootPath}.backup-{operationId}";
+
+        try
+        {
+            Directory.CreateDirectory(stagingPath);
+            foreach (var (relativePath, content) in snapshot.Files)
+            {
+                if (!IsManagedPath(relativePath))
+                {
+                    throw new InvalidDataException($"Недопустимый путь в снимке: {relativePath}");
+                }
+
+                var destinationPath = Path.Combine(
+                    stagingPath,
+                    relativePath.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+                await File.WriteAllBytesAsync(destinationPath, content, cancellationToken);
+            }
+
+            await ValidateSnapshotAsync(stagingPath, cancellationToken);
+
+            if (Directory.Exists(rootPath))
+            {
+                Directory.Move(rootPath, backupPath);
+            }
+
+            try
+            {
+                Directory.Move(stagingPath, rootPath);
+            }
+            catch
+            {
+                if (Directory.Exists(backupPath) && !Directory.Exists(rootPath))
+                {
+                    Directory.Move(backupPath, rootPath);
+                }
+
+                throw;
+            }
+
+            if (Directory.Exists(backupPath))
+            {
+                Directory.Delete(backupPath, true);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(stagingPath))
+            {
+                Directory.Delete(stagingPath, true);
+            }
+
+            if (Directory.Exists(backupPath) && Directory.Exists(rootPath))
+            {
+                Directory.Delete(backupPath, true);
+            }
         }
     }
 

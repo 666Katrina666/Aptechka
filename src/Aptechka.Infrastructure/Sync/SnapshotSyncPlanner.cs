@@ -49,17 +49,8 @@ public static class SnapshotSyncPlanner
         };
     }
 
-    public static bool AreEqual(DataSnapshot left, DataSnapshot right)
-    {
-        if (left.Files.Count != right.Files.Count)
-        {
-            return false;
-        }
-
-        return left.Files.All(pair =>
-            right.Files.TryGetValue(pair.Key, out var other) &&
-            pair.Value.AsSpan().SequenceEqual(other));
-    }
+    public static bool AreEqual(DataSnapshot left, DataSnapshot right) =>
+        left.HasSameFiles(right);
 
     private static bool IsCompatibleSubset(DataSnapshot subset, DataSnapshot superset) =>
         subset.Files.All(pair =>
