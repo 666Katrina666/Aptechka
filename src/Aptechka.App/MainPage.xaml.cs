@@ -7,6 +7,7 @@ public partial class MainPage : ContentPage
 {
     private readonly MainViewModel viewModel;
     private readonly IServiceProvider services;
+    private readonly List<PendingConflictResolution> pendingConflicts = [];
 
     public MainPage(MainViewModel viewModel, IServiceProvider services)
     {
@@ -44,22 +45,58 @@ public partial class MainPage : ContentPage
     {
         var page = services.GetRequiredService<ConflictResolutionPage>();
         await page.InitializeAsync(request);
+
+        var pending = new PendingConflictResolution(page);
         EventHandler<SyncResult>? resolved = null;
         EventHandler? unloaded = null;
         resolved = async (_, result) =>
-        {
-            page.Resolved -= resolved;
-            await Navigation.PopAsync();
-            await viewModel.CompleteConflictResolutionAsync(result);
-        };
+            await FinishConflictResolutionAsync(pending, resolved, unloaded, result);
         unloaded = (_, _) =>
         {
             page.Unloaded -= unloaded;
-            page.Resolved -= resolved;
+            if (!page.IsResolveInFlight)
+            {
+                page.Resolved -= resolved;
+                pendingConflicts.Remove(pending);
+            }
         };
+
+        pendingConflicts.Add(pending);
         page.Resolved += resolved;
         page.Unloaded += unloaded;
         await Navigation.PushAsync(page);
+    }
+
+    private async Task FinishConflictResolutionAsync(
+        PendingConflictResolution pending,
+        EventHandler<SyncResult>? resolved,
+        EventHandler? unloaded,
+        SyncResult result)
+    {
+        if (!pending.TryBegin())
+        {
+            return;
+        }
+
+        pending.Page.Resolved -= resolved;
+        pending.Page.Unloaded -= unloaded;
+        pendingConflicts.Remove(pending);
+
+        if (ReferenceEquals(pending.Page.Navigation.NavigationStack.LastOrDefault(), pending.Page))
+        {
+            await pending.Page.Navigation.PopAsync();
+        }
+
+        await viewModel.CompleteConflictResolutionAsync(result);
+    }
+
+    private sealed class PendingConflictResolution(ConflictResolutionPage page)
+    {
+        private int completed;
+
+        public ConflictResolutionPage Page { get; } = page;
+
+        public bool TryBegin() => Interlocked.Exchange(ref completed, 1) == 0;
     }
 
     private async Task OpenEditorAsync(string? itemId)

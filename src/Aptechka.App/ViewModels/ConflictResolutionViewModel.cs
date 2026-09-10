@@ -158,6 +158,7 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         }
 
         IsBusy = true;
+        Status = "Применяем решения…";
         try
         {
             var token = await tokenStore.GetTokenAsync() ?? string.Empty;

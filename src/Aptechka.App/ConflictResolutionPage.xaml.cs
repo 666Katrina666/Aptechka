@@ -12,12 +12,27 @@ public partial class ConflictResolutionPage : ContentPage
         InitializeComponent();
         BindingContext = this.viewModel = viewModel;
         viewModel.Completed += OnCompleted;
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        NavigationPage.SetHasBackButton(this, true);
     }
 
     public event EventHandler<SyncResult>? Resolved;
 
+    public bool IsResolveInFlight => viewModel.IsBusy;
+
     public Task InitializeAsync(ConflictResolutionRequest request) =>
         viewModel.InitializeAsync(request);
+
+    protected override bool OnBackButtonPressed() =>
+        viewModel.IsBusy || base.OnBackButtonPressed();
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ConflictResolutionViewModel.IsBusy) or null)
+        {
+            NavigationPage.SetHasBackButton(this, !viewModel.IsBusy);
+        }
+    }
 
     private async void OnApplyClicked(object? sender, EventArgs e)
     {
