@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Aptechka.Infrastructure.Storage;
 
-internal static class AptechkaJson
+public static class AptechkaJson
 {
     public static JsonSerializerOptions Options { get; } = new()
     {
