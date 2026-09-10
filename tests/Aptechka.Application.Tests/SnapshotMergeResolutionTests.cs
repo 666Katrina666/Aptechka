@@ -134,6 +134,11 @@ public sealed class SnapshotMergeResolutionTests
         var local = Snap(File(Manifest()), File(deleted));
         var remote = Snap(File(Manifest()), File(changed));
         var conflict = Assert.Single(Merge(@base, local, remote).Conflicts);
+        Assert.Equal("deletedAt", conflict.Field);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, conflict.Kind);
+        Assert.Contains("\"name\":\"Ибупрофен\"", conflict.BaseValueJson, StringComparison.Ordinal);
+        Assert.Contains("\"name\":\"Ибупрофен\"", conflict.LocalValueJson, StringComparison.Ordinal);
+        Assert.Contains("\"name\":\"Нурофен\"", conflict.RemoteValueJson, StringComparison.Ordinal);
 
         var result = Merge(@base, local, remote, Resolve(conflict, SyncConflictSide.Local));
         var merged = ReadItem(result, ItemId);
@@ -160,6 +165,127 @@ public sealed class SnapshotMergeResolutionTests
         Assert.Null(merged.DeletedAt);
         Assert.Equal("Нурофен", merged.Name);
         Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStaleDeleteVsModifyWhenRemoteNameChanges()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var tombstone = item.Delete(T1);
+        var remoteB = Rename(item, "B", T2);
+        var remoteC = Rename(item, "C", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(tombstone));
+        var shown = Snap(File(Manifest()), File(remoteB));
+        var current = Snap(File(Manifest()), File(remoteC));
+        var shownConflict = Assert.Single(Merge(@base, local, shown).Conflicts);
+
+        var result = Merge(@base, local, current, Resolve(shownConflict, SyncConflictSide.Remote));
+        var returned = Assert.Single(result.Conflicts);
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal(shownConflict.Key, returned.Key);
+        Assert.Equal("deletedAt", returned.Field);
+        Assert.NotEqual(shownConflict.RemoteValueJson, returned.RemoteValueJson);
+        Assert.Contains("\"name\":\"C\"", returned.RemoteValueJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"name\":\"C\"", shownConflict.RemoteValueJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStaleDeleteVsModifyWhenTombstoneFieldChanges()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var tombstone = item.Delete(T1);
+        var renamedTombstone = Rename(tombstone, "Парацетамол", T1.AddMinutes(1));
+        var remote = Rename(item, "Нурофен", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var shown = Snap(File(Manifest()), File(tombstone));
+        var current = Snap(File(Manifest()), File(renamedTombstone));
+        var remoteSnap = Snap(File(Manifest()), File(remote));
+        var shownConflict = Assert.Single(Merge(@base, shown, remoteSnap).Conflicts);
+        Assert.Equal(tombstone.DeletedAt, renamedTombstone.DeletedAt);
+
+        var result = Merge(@base, current, remoteSnap, Resolve(shownConflict, SyncConflictSide.Local));
+        var returned = Assert.Single(result.Conflicts);
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.NotEqual(shownConflict.LocalValueJson, returned.LocalValueJson);
+        Assert.Contains("\"name\":\"Парацетамол\"", returned.LocalValueJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStalePackageDeleteVsModifyWhenNoteChanges()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var tombstone = package.Delete(T1);
+        var remoteNoteB = WithNote(package, "B", T2);
+        var remoteNoteC = WithNote(package, "C", T2);
+        var @base = Snap(File(Manifest()), File(item), File(package));
+        var local = Snap(File(Manifest()), File(item), File(tombstone));
+        var shown = Snap(File(Manifest()), File(item), File(remoteNoteB));
+        var current = Snap(File(Manifest()), File(item), File(remoteNoteC));
+        var shownConflict = Assert.Single(Merge(@base, local, shown).Conflicts);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, shownConflict.Kind);
+        Assert.Null(remoteNoteB.DeletedAt);
+        Assert.Null(remoteNoteC.DeletedAt);
+
+        var result = Merge(@base, local, current, Resolve(shownConflict, SyncConflictSide.Remote));
+        var returned = Assert.Single(result.Conflicts);
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.NotEqual(shownConflict.RemoteValueJson, returned.RemoteValueJson);
+        Assert.Contains("\"note\":\"C\"", returned.RemoteValueJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStalePackageDeleteVsModifyWhenStockStateChanges()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var tombstone = package.Delete(T1);
+        var remoteLow = WithStock(package, StockState.Low, T2);
+        var remoteDepleted = WithStock(package, StockState.Depleted, T2);
+        var @base = Snap(File(Manifest()), File(item), File(package));
+        var local = Snap(File(Manifest()), File(item), File(tombstone));
+        var shown = Snap(File(Manifest()), File(item), File(remoteLow));
+        var current = Snap(File(Manifest()), File(item), File(remoteDepleted));
+        var shownConflict = Assert.Single(Merge(@base, local, shown).Conflicts);
+
+        var result = Merge(@base, local, current, Resolve(shownConflict, SyncConflictSide.Remote));
+        var returned = Assert.Single(result.Conflicts);
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.NotEqual(shownConflict.RemoteValueJson, returned.RemoteValueJson);
+        Assert.Contains("\"stockState\":\"depleted\"", returned.RemoteValueJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_PackageDeleteVsModifyResolvesWhenEntitiesAreUnchanged()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var tombstone = package.Delete(T1);
+        var changed = WithNote(package, "дома", T2);
+        var @base = Snap(File(Manifest()), File(item), File(package));
+        var local = Snap(File(Manifest()), File(item), File(tombstone));
+        var remote = Snap(File(Manifest()), File(item), File(changed));
+        var conflict = Assert.Single(Merge(@base, local, remote).Conflicts);
+
+        var choseRemote = ReadPackage(
+            Merge(@base, local, remote, Resolve(conflict, SyncConflictSide.Remote)),
+            PackageId);
+        var choseLocal = ReadPackage(
+            Merge(@base, local, remote, Resolve(conflict, SyncConflictSide.Local)),
+            PackageId);
+
+        Assert.Equal("дома", choseRemote.Note);
+        Assert.Null(choseRemote.DeletedAt);
+        Assert.Equal(3, choseRemote.Revision);
+        Assert.Equal(MergedAt, choseRemote.UpdatedAt);
+        Assert.NotNull(choseLocal.DeletedAt);
+        Assert.Equal(3, choseLocal.Revision);
     }
 
     [Fact]
@@ -231,6 +357,15 @@ public sealed class SnapshotMergeResolutionTests
                 Resolve(conflict, SyncConflictSide.Remote)));
 
         Assert.Contains("стороны", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenConflictSideIsUndefined()
+    {
+        var (conflict, @base, local, remote) = NameConflict();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Merge(@base, local, remote, Resolve(conflict, (SyncConflictSide)999)));
     }
 
     [Fact]
@@ -357,6 +492,28 @@ public sealed class SnapshotMergeResolutionTests
             null,
             StockState.Available,
             null);
+
+    private static Package WithNote(Package package, string? note, DateTimeOffset at) =>
+        package.Update(
+            at,
+            package.Label,
+            package.ExpirationDate,
+            package.ExpirationPrecision,
+            package.OpenedDate,
+            package.ShelfLifeAfterOpeningDays,
+            package.StockState,
+            note);
+
+    private static Package WithStock(Package package, StockState stockState, DateTimeOffset at) =>
+        package.Update(
+            at,
+            package.Label,
+            package.ExpirationDate,
+            package.ExpirationPrecision,
+            package.OpenedDate,
+            package.ShelfLifeAfterOpeningDays,
+            stockState,
+            package.Note);
 
     private static DatasetManifest Manifest() =>
         new(DatasetManifest.CurrentSchemaVersion, DatasetId, T0);

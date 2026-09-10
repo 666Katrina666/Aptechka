@@ -28,6 +28,13 @@ internal sealed class SnapshotMergeResolutions
         {
             ArgumentNullException.ThrowIfNull(resolution);
             ArgumentNullException.ThrowIfNull(resolution.Conflict);
+            if (!Enum.IsDefined(resolution.Side))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(resolutions),
+                    "Сторона разрешения конфликта неизвестна.");
+            }
+
             if (byKey.TryGetValue(resolution.Conflict.Key, out var existing) &&
                 existing.Side != resolution.Side)
             {
@@ -62,10 +69,20 @@ internal sealed class SnapshotMergeResolutions
     }
 
     public static byte[]? Choose(SyncConflictSide side, byte[]? local, byte[]? remote) =>
-        side == SyncConflictSide.Local ? local : remote;
+        side switch
+        {
+            SyncConflictSide.Local => local,
+            SyncConflictSide.Remote => remote,
+            _ => throw new ArgumentOutOfRangeException(nameof(side)),
+        };
 
     public static T Choose<T>(SyncConflictSide side, T local, T remote) =>
-        side == SyncConflictSide.Local ? local : remote;
+        side switch
+        {
+            SyncConflictSide.Local => local,
+            SyncConflictSide.Remote => remote,
+            _ => throw new ArgumentOutOfRangeException(nameof(side)),
+        };
 
     private static bool Matches(SyncConflict seen, SyncConflict current) =>
         string.Equals(seen.Key, current.Key, StringComparison.Ordinal) &&

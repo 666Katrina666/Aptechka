@@ -668,6 +668,35 @@ public sealed class GitHubSyncServiceTests
     }
 
     [Fact]
+    public async Task ResolveConflicts_DoesNotApplyStaleDeleteChoiceWhenRemoteEntityChanges()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var deleted = item.Delete(T1);
+        var remoteB = Rename(item, "B", T2);
+        var remoteC = Rename(item, "C", T2.AddMinutes(1));
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(deleted));
+        var remote = Snap(File(Manifest()), File(remoteB));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+        var conflict = Assert.Single((await harness.Sync()).Conflicts);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, conflict.Kind);
+        harness.GitHub.Remote = Remote("sha-1", Snap(File(Manifest()), File(remoteC)));
+
+        var result = await harness.Resolve([new SyncConflictResolution(conflict, SyncConflictSide.Remote)]);
+        var returned = Assert.Single(result.Conflicts);
+
+        Assert.Equal(SyncOutcome.Conflict, result.Outcome);
+        Assert.NotEqual(conflict.RemoteValueJson, returned.RemoteValueJson);
+        Assert.Contains("\"name\":\"C\"", returned.RemoteValueJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("B", result.Message);
+        Assert.DoesNotContain("C", result.Message);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.Equal(0, harness.Store.TryReplaceCalls);
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
     public async Task ResolveConflicts_RevalidatesChoiceAfterHeadRace()
     {
         var item = Item(ItemId, "Ибупрофен");

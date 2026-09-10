@@ -228,8 +228,7 @@ public sealed class SnapshotMergeEngine
         {
             RecordDeleteVsModify(
                 path,
-                @base.DeletedAt,
-                @base.CreatedAt,
+                @base,
                 local!,
                 remote!,
                 mergedAt,
@@ -366,8 +365,7 @@ public sealed class SnapshotMergeEngine
         {
             RecordDeleteVsModify(
                 path,
-                @base.DeletedAt,
-                @base.CreatedAt,
+                @base,
                 local!,
                 remote!,
                 mergedAt,
@@ -630,8 +628,7 @@ public sealed class SnapshotMergeEngine
 
     private static void RecordDeleteVsModify(
         string path,
-        DateTimeOffset? baseDeletedAt,
-        DateTimeOffset baseCreatedAt,
+        InventoryItem @base,
         InventoryItem local,
         InventoryItem remote,
         DateTimeOffset mergedAt,
@@ -643,9 +640,9 @@ public sealed class SnapshotMergeEngine
             path,
             "deletedAt",
             SyncConflictKind.DeleteVsModify,
-            baseDeletedAt,
-            local.DeletedAt,
-            remote.DeletedAt);
+            @base,
+            local,
+            remote);
         if (!resolutions.TryResolve(conflict, out var side))
         {
             conflicts.Add(conflict);
@@ -655,7 +652,7 @@ public sealed class SnapshotMergeEngine
         var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
         var item = chosen with
         {
-            CreatedAt = Earlier(baseCreatedAt, local.CreatedAt, remote.CreatedAt),
+            CreatedAt = Earlier(@base.CreatedAt, local.CreatedAt, remote.CreatedAt),
             UpdatedAt = mergedAt,
             Revision = Math.Max(local.Revision, remote.Revision) + 1,
         };
@@ -665,8 +662,7 @@ public sealed class SnapshotMergeEngine
 
     private static void RecordDeleteVsModify(
         string path,
-        DateTimeOffset? baseDeletedAt,
-        DateTimeOffset baseCreatedAt,
+        Package @base,
         Package local,
         Package remote,
         DateTimeOffset mergedAt,
@@ -678,9 +674,9 @@ public sealed class SnapshotMergeEngine
             path,
             "deletedAt",
             SyncConflictKind.DeleteVsModify,
-            baseDeletedAt,
-            local.DeletedAt,
-            remote.DeletedAt);
+            @base,
+            local,
+            remote);
         if (!resolutions.TryResolve(conflict, out var side))
         {
             conflicts.Add(conflict);
@@ -690,7 +686,7 @@ public sealed class SnapshotMergeEngine
         var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
         var package = chosen with
         {
-            CreatedAt = Earlier(baseCreatedAt, local.CreatedAt, remote.CreatedAt),
+            CreatedAt = Earlier(@base.CreatedAt, local.CreatedAt, remote.CreatedAt),
             UpdatedAt = mergedAt,
             Revision = Math.Max(local.Revision, remote.Revision) + 1,
         };
