@@ -205,6 +205,15 @@ public sealed class GitHubDataClient(HttpClient httpClient)
         var message = await ReadErrorMessageAsync(response, cancellationToken);
         var statusCode = (int)response.StatusCode;
         response.Dispose();
+        if (statusCode == 404)
+        {
+            throw new GitHubApiException(
+                404,
+                "Репозиторий не найден или у токена нет доступа. " +
+                "Проверь владельца/репозиторий/ветку и что у токена Contents = Read and write на aptechka-data. " +
+                "Чтобы заменить токен, вставь новый в поле и нажми «Синхронизировать».");
+        }
+
         throw new GitHubApiException(statusCode, message);
     }
 
