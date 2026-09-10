@@ -17,15 +17,25 @@ public sealed class SnapshotMergeEngine
         DataSnapshot @base,
         DataSnapshot local,
         DataSnapshot remote,
-        DateTimeOffset mergedAt)
+        DateTimeOffset mergedAt) =>
+        Merge(@base, local, remote, mergedAt, []);
+
+    public SnapshotMergeResult Merge(
+        DataSnapshot @base,
+        DataSnapshot local,
+        DataSnapshot remote,
+        DateTimeOffset mergedAt,
+        IReadOnlyList<SyncConflictResolution> resolutions)
     {
         ArgumentNullException.ThrowIfNull(@base);
         ArgumentNullException.ThrowIfNull(local);
         ArgumentNullException.ThrowIfNull(remote);
+        ArgumentNullException.ThrowIfNull(resolutions);
 
         SnapshotMergeIdentities.RequireManifest(@base, "базовом");
         SnapshotMergeIdentities.RequireManifest(local, "локальном");
         SnapshotMergeIdentities.RequireManifest(remote, "удалённом");
+        var lookup = SnapshotMergeResolutions.Create(resolutions);
 
         var paths = @base.Files.Keys
             .Concat(local.Files.Keys)
@@ -42,7 +52,7 @@ public sealed class SnapshotMergeEngine
             @base.Files.TryGetValue(path, out var baseBytes);
             local.Files.TryGetValue(path, out var localBytes);
             remote.Files.TryGetValue(path, out var remoteBytes);
-            MergePath(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
+            MergePath(path, baseBytes, localBytes, remoteBytes, mergedAt, lookup, merged, conflicts);
         }
 
         if (conflicts.Count > 0)
@@ -66,6 +76,7 @@ public sealed class SnapshotMergeEngine
         byte[]? localBytes,
         byte[]? remoteBytes,
         DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
@@ -77,7 +88,7 @@ public sealed class SnapshotMergeEngine
 
         if (IsEntityPath(path, "packages/", out _))
         {
-            MergePackage(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
+            MergePackage(path, baseBytes, localBytes, remoteBytes, mergedAt, resolutions, merged, conflicts);
             return;
         }
 
@@ -95,7 +106,7 @@ public sealed class SnapshotMergeEngine
 
         if (IsEntityPath(path, "items/", out _))
         {
-            MergeItem(path, baseBytes, localBytes, remoteBytes, mergedAt, merged, conflicts);
+            MergeItem(path, baseBytes, localBytes, remoteBytes, mergedAt, resolutions, merged, conflicts);
             return;
         }
 
@@ -105,7 +116,7 @@ public sealed class SnapshotMergeEngine
             throw new InvalidDataException($"Путь не соответствует сущности: {path}");
         }
 
-        MergeOpaqueFile(path, baseBytes, localBytes, remoteBytes, merged, conflicts);
+        MergeOpaqueFile(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts);
     }
 
     private static void MergeManifest(
@@ -169,20 +180,29 @@ public sealed class SnapshotMergeEngine
         byte[]? localBytes,
         byte[]? remoteBytes,
         DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
         var @base = ReadItem(path, baseBytes);
         var local = ReadItem(path, localBytes);
         var remote = ReadItem(path, remoteBytes);
-        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, merged, conflicts))
+        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts))
         {
             return;
         }
 
         if (@base is null)
         {
-            conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, null, localBytes, remoteBytes));
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
             return;
         }
 
@@ -206,27 +226,31 @@ public sealed class SnapshotMergeEngine
 
         if (IsDeleted(local!) != IsDeleted(remote!))
         {
-            conflicts.Add(FieldConflict(
+            RecordDeleteVsModify(
                 path,
-                "deletedAt",
-                SyncConflictKind.DeleteVsModify,
                 @base.DeletedAt,
-                local!.DeletedAt,
-                remote!.DeletedAt));
+                @base.CreatedAt,
+                local!,
+                remote!,
+                mergedAt,
+                resolutions,
+                merged,
+                conflicts);
             return;
         }
 
         var fieldConflicts = new List<SyncConflict>();
-        var name = MergeScalar(path, "name", @base.Name, local!.Name, remote!.Name, fieldConflicts);
-        var category = MergeScalar(path, "category", @base.Category, local.Category, remote.Category, fieldConflicts);
-        var form = MergeScalar(path, "form", @base.Form, local.Form, remote.Form, fieldConflicts);
-        var strength = MergeScalar(path, "strength", @base.Strength, local.Strength, remote.Strength, fieldConflicts);
+        var name = MergeScalar(path, "name", @base.Name, local!.Name, remote!.Name, resolutions, fieldConflicts);
+        var category = MergeScalar(path, "category", @base.Category, local.Category, remote.Category, resolutions, fieldConflicts);
+        var form = MergeScalar(path, "form", @base.Form, local.Form, remote.Form, resolutions, fieldConflicts);
+        var strength = MergeScalar(path, "strength", @base.Strength, local.Strength, remote.Strength, resolutions, fieldConflicts);
         var description = MergeScalar(
             path,
             "description",
             @base.Description,
             local.Description,
             remote.Description,
+            resolutions,
             fieldConflicts);
         var keepInStock = MergeScalar(
             path,
@@ -234,6 +258,7 @@ public sealed class SnapshotMergeEngine
             @base.KeepInStock,
             local.KeepInStock,
             remote.KeepInStock,
+            resolutions,
             fieldConflicts);
         var coverPhotoId = MergeScalar(
             path,
@@ -241,6 +266,7 @@ public sealed class SnapshotMergeEngine
             @base.CoverPhotoId,
             local.CoverPhotoId,
             remote.CoverPhotoId,
+            resolutions,
             fieldConflicts);
         var aliases = MergeStringSet(@base.Aliases, local.Aliases, remote.Aliases);
         var activeIngredients = MergeStringSet(
@@ -280,6 +306,7 @@ public sealed class SnapshotMergeEngine
         byte[]? localBytes,
         byte[]? remoteBytes,
         DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
@@ -292,7 +319,7 @@ public sealed class SnapshotMergeEngine
             SnapshotMergeIdentities.EnsurePackageItemIdImmutable(path, @base, local, remote);
         }
 
-        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, merged, conflicts))
+        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts))
         {
             return;
         }
@@ -305,7 +332,15 @@ public sealed class SnapshotMergeEngine
                 return;
             }
 
-            conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, null, localBytes, remoteBytes));
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
             return;
         }
 
@@ -329,24 +364,28 @@ public sealed class SnapshotMergeEngine
 
         if (IsDeleted(local!) != IsDeleted(remote!))
         {
-            conflicts.Add(FieldConflict(
+            RecordDeleteVsModify(
                 path,
-                "deletedAt",
-                SyncConflictKind.DeleteVsModify,
                 @base.DeletedAt,
-                local!.DeletedAt,
-                remote!.DeletedAt));
+                @base.CreatedAt,
+                local!,
+                remote!,
+                mergedAt,
+                resolutions,
+                merged,
+                conflicts);
             return;
         }
 
         var fieldConflicts = new List<SyncConflict>();
-        var label = MergeScalar(path, "label", @base.Label, local!.Label, remote!.Label, fieldConflicts);
+        var label = MergeScalar(path, "label", @base.Label, local!.Label, remote!.Label, resolutions, fieldConflicts);
         var expiration = MergeScalar(
             path,
             "expiration",
             ExpirationOf(@base),
             ExpirationOf(local),
             ExpirationOf(remote),
+            resolutions,
             fieldConflicts);
         var openedDate = MergeScalar(
             path,
@@ -354,6 +393,7 @@ public sealed class SnapshotMergeEngine
             @base.OpenedDate,
             local.OpenedDate,
             remote.OpenedDate,
+            resolutions,
             fieldConflicts);
         var shelfLife = MergeScalar(
             path,
@@ -361,6 +401,7 @@ public sealed class SnapshotMergeEngine
             @base.ShelfLifeAfterOpeningDays,
             local.ShelfLifeAfterOpeningDays,
             remote.ShelfLifeAfterOpeningDays,
+            resolutions,
             fieldConflicts);
         var stockState = MergeScalar(
             path,
@@ -368,8 +409,9 @@ public sealed class SnapshotMergeEngine
             @base.StockState,
             local.StockState,
             remote.StockState,
+            resolutions,
             fieldConflicts);
-        var note = MergeScalar(path, "note", @base.Note, local.Note, remote.Note, fieldConflicts);
+        var note = MergeScalar(path, "note", @base.Note, local.Note, remote.Note, resolutions, fieldConflicts);
         var deletedAt = MergeDeletedAt(@base, local, remote);
 
         if (fieldConflicts.Count > 0)
@@ -401,6 +443,7 @@ public sealed class SnapshotMergeEngine
         byte[]? baseBytes,
         byte[]? localBytes,
         byte[]? remoteBytes,
+        SnapshotMergeResolutions resolutions,
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
@@ -422,12 +465,15 @@ public sealed class SnapshotMergeEngine
                 return true;
             }
 
-            conflicts.Add(FileConflict(
+            RecordFileConflict(
                 path,
                 SyncConflictKind.FileDeleteVsModify,
                 baseBytes,
                 null,
-                remoteBytes));
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
             return true;
         }
 
@@ -444,12 +490,15 @@ public sealed class SnapshotMergeEngine
                 return true;
             }
 
-            conflicts.Add(FileConflict(
+            RecordFileConflict(
                 path,
                 SyncConflictKind.FileDeleteVsModify,
                 baseBytes,
                 localBytes,
-                null));
+                null,
+                resolutions,
+                merged,
+                conflicts);
             return true;
         }
 
@@ -461,17 +510,26 @@ public sealed class SnapshotMergeEngine
         byte[]? baseBytes,
         byte[]? localBytes,
         byte[]? remoteBytes,
+        SnapshotMergeResolutions resolutions,
         Dictionary<string, byte[]> merged,
         List<SyncConflict> conflicts)
     {
-        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, merged, conflicts))
+        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts))
         {
             return;
         }
 
         if (baseBytes is null)
         {
-            conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, null, localBytes, remoteBytes));
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
             return;
         }
 
@@ -487,7 +545,15 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
-        conflicts.Add(FileConflict(path, SyncConflictKind.FileChangedBoth, baseBytes, localBytes, remoteBytes));
+        RecordFileConflict(
+            path,
+            SyncConflictKind.FileChangedBoth,
+            baseBytes,
+            localBytes,
+            remoteBytes,
+            resolutions,
+            merged,
+            conflicts);
     }
 
     private static void AcceptItem(
@@ -542,12 +608,103 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(package));
     }
 
+    private static void RecordFileConflict(
+        string path,
+        SyncConflictKind kind,
+        byte[]? @base,
+        byte[]? local,
+        byte[]? remote,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var conflict = FileConflict(path, kind, @base, local, remote);
+        if (resolutions.TryResolve(conflict, out var side))
+        {
+            Accept(merged, path, SnapshotMergeResolutions.Choose(side, local, remote));
+            return;
+        }
+
+        conflicts.Add(conflict);
+    }
+
+    private static void RecordDeleteVsModify(
+        string path,
+        DateTimeOffset? baseDeletedAt,
+        DateTimeOffset baseCreatedAt,
+        InventoryItem local,
+        InventoryItem remote,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var conflict = FieldConflict(
+            path,
+            "deletedAt",
+            SyncConflictKind.DeleteVsModify,
+            baseDeletedAt,
+            local.DeletedAt,
+            remote.DeletedAt);
+        if (!resolutions.TryResolve(conflict, out var side))
+        {
+            conflicts.Add(conflict);
+            return;
+        }
+
+        var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
+        var item = chosen with
+        {
+            CreatedAt = Earlier(baseCreatedAt, local.CreatedAt, remote.CreatedAt),
+            UpdatedAt = mergedAt,
+            Revision = Math.Max(local.Revision, remote.Revision) + 1,
+        };
+        ValidateEntity(path, item);
+        Accept(merged, path, Serialize(item));
+    }
+
+    private static void RecordDeleteVsModify(
+        string path,
+        DateTimeOffset? baseDeletedAt,
+        DateTimeOffset baseCreatedAt,
+        Package local,
+        Package remote,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var conflict = FieldConflict(
+            path,
+            "deletedAt",
+            SyncConflictKind.DeleteVsModify,
+            baseDeletedAt,
+            local.DeletedAt,
+            remote.DeletedAt);
+        if (!resolutions.TryResolve(conflict, out var side))
+        {
+            conflicts.Add(conflict);
+            return;
+        }
+
+        var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
+        var package = chosen with
+        {
+            CreatedAt = Earlier(baseCreatedAt, local.CreatedAt, remote.CreatedAt),
+            UpdatedAt = mergedAt,
+            Revision = Math.Max(local.Revision, remote.Revision) + 1,
+        };
+        ValidateEntity(path, package);
+        Accept(merged, path, Serialize(package));
+    }
+
     private static T MergeScalar<T>(
         string path,
         string field,
         T @base,
         T local,
         T remote,
+        SnapshotMergeResolutions resolutions,
         List<SyncConflict> conflicts)
     {
         if (EqualityComparer<T>.Default.Equals(local, remote))
@@ -565,7 +722,13 @@ public sealed class SnapshotMergeEngine
             return local;
         }
 
-        conflicts.Add(FieldConflict(path, field, SyncConflictKind.FieldChangedBoth, @base, local, remote));
+        var conflict = FieldConflict(path, field, SyncConflictKind.FieldChangedBoth, @base, local, remote);
+        if (resolutions.TryResolve(conflict, out var side))
+        {
+            return SnapshotMergeResolutions.Choose(side, local, remote);
+        }
+
+        conflicts.Add(conflict);
         return local;
     }
 

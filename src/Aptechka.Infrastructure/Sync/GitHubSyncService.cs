@@ -28,16 +28,35 @@ public sealed class GitHubSyncService(
     private readonly SnapshotMergeEngine mergeEngine = new();
     private readonly SemaphoreSlim syncGate = new(1, 1);
 
-    public async Task<SyncResult> SyncAsync(
+    public Task<SyncResult> SyncAsync(
         SyncTarget target,
         string accessToken,
         string deviceName,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(target, accessToken, deviceName, [], cancellationToken);
+
+    public Task<SyncResult> ResolveConflictsAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        IReadOnlyList<SyncConflictResolution> resolutions,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(resolutions);
+        return ExecuteAsync(target, accessToken, deviceName, resolutions, cancellationToken);
+    }
+
+    private async Task<SyncResult> ExecuteAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        IReadOnlyList<SyncConflictResolution> resolutions,
+        CancellationToken cancellationToken)
     {
         await syncGate.WaitAsync(cancellationToken);
         try
         {
-            return await SyncCoreAsync(target, accessToken, deviceName, cancellationToken);
+            return await SyncCoreAsync(target, accessToken, deviceName, resolutions, cancellationToken);
         }
         finally
         {
@@ -49,6 +68,7 @@ public sealed class GitHubSyncService(
         SyncTarget target,
         string accessToken,
         string deviceName,
+        IReadOnlyList<SyncConflictResolution> resolutions,
         CancellationToken cancellationToken)
     {
         target.EnsureValid();
@@ -69,6 +89,7 @@ public sealed class GitHubSyncService(
                 accessToken,
                 safeDeviceName,
                 local,
+                resolutions,
                 cancellationToken);
         }
 
@@ -78,6 +99,7 @@ public sealed class GitHubSyncService(
             safeDeviceName,
             local,
             remote,
+            resolutions,
             cancellationToken);
     }
 
@@ -86,6 +108,7 @@ public sealed class GitHubSyncService(
         string accessToken,
         string deviceName,
         DataSnapshot local,
+        IReadOnlyList<SyncConflictResolution> resolutions,
         CancellationToken cancellationToken)
     {
         if (local.IsEmpty)
@@ -146,6 +169,7 @@ public sealed class GitHubSyncService(
                 deviceName,
                 null,
                 null,
+                resolutions,
                 cancellationToken,
                 consumedRemotePushAttempts: 1,
                 ephemeralBase: remote.Data);
@@ -158,6 +182,7 @@ public sealed class GitHubSyncService(
         string deviceName,
         DataSnapshot? primedLocal,
         GitHubRemoteSnapshot? primedRemote,
+        IReadOnlyList<SyncConflictResolution> resolutions,
         CancellationToken cancellationToken,
         int consumedRemotePushAttempts = 0,
         DataSnapshot? ephemeralBase = null)
@@ -187,6 +212,7 @@ public sealed class GitHubSyncService(
                     local,
                     remote,
                     ephemeralBase,
+                    resolutions,
                     cancellationToken);
                 switch (attempt.Kind)
                 {
@@ -227,6 +253,7 @@ public sealed class GitHubSyncService(
         DataSnapshot local,
         GitHubRemoteSnapshot remote,
         DataSnapshot? ephemeralBase,
+        IReadOnlyList<SyncConflictResolution> resolutions,
         CancellationToken cancellationToken)
     {
         if (local.IsEmpty)
@@ -277,7 +304,7 @@ public sealed class GitHubSyncService(
                 cancellationToken);
         }
 
-        var merge = mergeEngine.Merge(baseSnapshot, local, remote.Data, clock.UtcNow);
+        var merge = mergeEngine.Merge(baseSnapshot, local, remote.Data, clock.UtcNow, resolutions);
         if (merge.HasConflicts)
         {
             return AttemptOutcome.Completed(new SyncResult(
