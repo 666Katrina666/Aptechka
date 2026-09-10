@@ -26,12 +26,30 @@ public sealed class GitHubSyncService(
         "Удалённая ветка изменялась повторно. Синхронизация остановлена без потери локальных данных.";
 
     private readonly SnapshotMergeEngine mergeEngine = new();
+    private readonly SemaphoreSlim syncGate = new(1, 1);
 
     public async Task<SyncResult> SyncAsync(
         SyncTarget target,
         string accessToken,
         string deviceName,
         CancellationToken cancellationToken = default)
+    {
+        await syncGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await SyncCoreAsync(target, accessToken, deviceName, cancellationToken);
+        }
+        finally
+        {
+            syncGate.Release();
+        }
+    }
+
+    private async Task<SyncResult> SyncCoreAsync(
+        SyncTarget target,
+        string accessToken,
+        string deviceName,
+        CancellationToken cancellationToken)
     {
         target.EnsureValid();
         if (string.IsNullOrWhiteSpace(accessToken))
@@ -129,7 +147,8 @@ public sealed class GitHubSyncService(
                 null,
                 null,
                 cancellationToken,
-                consumedRemotePushAttempts: 1);
+                consumedRemotePushAttempts: 1,
+                ephemeralBase: remote.Data);
         }
     }
 
@@ -140,7 +159,8 @@ public sealed class GitHubSyncService(
         DataSnapshot? primedLocal,
         GitHubRemoteSnapshot? primedRemote,
         CancellationToken cancellationToken,
-        int consumedRemotePushAttempts = 0)
+        int consumedRemotePushAttempts = 0,
+        DataSnapshot? ephemeralBase = null)
     {
         var remotePushAttempts = consumedRemotePushAttempts;
         var usePrimed = primedRemote is not null;
@@ -166,6 +186,7 @@ public sealed class GitHubSyncService(
                     deviceName,
                     local,
                     remote,
+                    ephemeralBase,
                     cancellationToken);
                 switch (attempt.Kind)
                 {
@@ -174,6 +195,7 @@ public sealed class GitHubSyncService(
                     case AttemptKind.HeadRace:
                         remotePushAttempts++;
                         retryBecauseOfHeadRace = true;
+                        ephemeralBase = attempt.FailedRemote!.Data;
                         break;
                     case AttemptKind.CasMiss:
                         continue;
@@ -204,6 +226,7 @@ public sealed class GitHubSyncService(
         string deviceName,
         DataSnapshot local,
         GitHubRemoteSnapshot remote,
+        DataSnapshot? ephemeralBase,
         CancellationToken cancellationToken)
     {
         if (local.IsEmpty)
@@ -235,10 +258,11 @@ public sealed class GitHubSyncService(
         }
 
         var state = await stateStore.LoadAsync(cancellationToken);
-        var baseSnapshot = state is not null &&
-                           string.Equals(state.DatasetId, localManifest.DatasetId, StringComparison.Ordinal)
+        var persistedBase = state is not null &&
+                            string.Equals(state.DatasetId, localManifest.DatasetId, StringComparison.Ordinal)
             ? state.GetBaseSnapshot()
             : null;
+        var baseSnapshot = ephemeralBase ?? persistedBase;
 
         if (baseSnapshot is null)
         {
@@ -313,7 +337,7 @@ public sealed class GitHubSyncService(
         }
         catch (GitHubHeadChangedException)
         {
-            return AttemptOutcome.HeadRace();
+            return AttemptOutcome.HeadRace(remote);
         }
     }
 
@@ -352,7 +376,7 @@ public sealed class GitHubSyncService(
                 }
                 catch (GitHubHeadChangedException)
                 {
-                    return AttemptOutcome.HeadRace();
+                    return AttemptOutcome.HeadRace(remote);
                 }
 
             case SnapshotSyncAction.Pull:
@@ -425,12 +449,16 @@ public sealed class GitHubSyncService(
         HeadRace,
     }
 
-    private readonly record struct AttemptOutcome(AttemptKind Kind, SyncResult? Result)
+    private readonly record struct AttemptOutcome(
+        AttemptKind Kind,
+        SyncResult? Result,
+        GitHubRemoteSnapshot? FailedRemote)
     {
-        public static AttemptOutcome Completed(SyncResult result) => new(AttemptKind.Completed, result);
+        public static AttemptOutcome Completed(SyncResult result) => new(AttemptKind.Completed, result, null);
 
-        public static AttemptOutcome CasMiss() => new(AttemptKind.CasMiss, null);
+        public static AttemptOutcome CasMiss() => new(AttemptKind.CasMiss, null, null);
 
-        public static AttemptOutcome HeadRace() => new(AttemptKind.HeadRace, null);
+        public static AttemptOutcome HeadRace(GitHubRemoteSnapshot remote) =>
+            new(AttemptKind.HeadRace, null, remote);
     }
 }

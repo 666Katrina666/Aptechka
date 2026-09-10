@@ -436,6 +436,168 @@ public sealed class GitHubSyncServiceTests
         await AssertStateAsync(harness, "sha-0", snapshot);
     }
 
+    [Fact]
+    public async Task Sync_HeadRaceUsesObservedRemoteAsEphemeralBaseForSameFieldChange()
+    {
+        var item = Item(ItemId, "A");
+        var localItem = Describe(item, "local", T1);
+        var remote1Item = Rename(item, "B", T1);
+        var remote2Item = Rename(remote1Item, "C", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote1 = Snap(File(Manifest()), File(remote1Item));
+        var remote2 = Snap(File(Manifest()), File(remote2Item));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-r1", remote1));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-r2", remote2));
+        var firstMerged = Merge(@base, local, remote1);
+        var expected = Merge(remote1, firstMerged, remote2);
+
+        var result = await harness.Sync();
+        var pushed = ReadItem(harness.GitHub.Committed[1], ItemId);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(["sha-r1", "sha-r2"], harness.GitHub.CommitParents);
+        Assert.Equal("C", pushed.Name);
+        Assert.Equal("local", pushed.Description);
+        Assert.True(harness.GitHub.Committed[1].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-2", expected);
+    }
+
+    [Fact]
+    public async Task Sync_NoBaseHeadRaceMergesAgainstObservedRemoteInsteadOfConflicting()
+    {
+        var localItem = Item(ItemId, "Ибупрофен");
+        var remoteItem = Item(SecondItemId, "Вата", InventoryItemCategory.MedicalSupply);
+        var remote1 = Snap(File(Manifest()));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote2 = Snap(File(Manifest()), File(remoteItem));
+        await using var harness = await Harness.CreateAsync(null, local, Remote("sha-r1", remote1));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-r2", remote2));
+        var expected = Merge(remote1, local, remote2);
+
+        var result = await harness.Sync();
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(2, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-r1", "sha-r2"], harness.GitHub.CommitParents);
+        Assert.True(harness.GitHub.Committed[1].HasSameFiles(expected));
+        Assert.True(expected.Files.ContainsKey($"items/{ItemId}.json"));
+        Assert.True(expected.Files.ContainsKey($"items/{SecondItemId}.json"));
+        await AssertStateAsync(harness, "commit-2", expected);
+    }
+
+    [Fact]
+    public async Task Sync_HeadRaceChainAdvancesEphemeralBaseEachAttempt()
+    {
+        var item = Item(ItemId, "A");
+        var localItem = Describe(item, "local", T1);
+        var remote1Item = Rename(item, "B", T1);
+        var remote2Item = Rename(remote1Item, "C", T2);
+        var remote3Item = Rename(remote2Item, "D", T2.AddHours(1));
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote1 = Snap(File(Manifest()), File(remote1Item));
+        var remote2 = Snap(File(Manifest()), File(remote2Item));
+        var remote3 = Snap(File(Manifest()), File(remote3Item));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-r1", remote1));
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.CommitErrors.Enqueue(new GitHubHeadChangedException());
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-r2", remote2));
+        harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-r3", remote3));
+        var merged1 = Merge(@base, local, remote1);
+        var merged2 = Merge(remote1, merged1, remote2);
+        var expected = Merge(remote2, merged2, remote3);
+
+        var result = await harness.Sync();
+        var pushed = ReadItem(harness.GitHub.Committed[2], ItemId);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(3, harness.GitHub.CommitCalls);
+        Assert.Equal(["sha-r1", "sha-r2", "sha-r3"], harness.GitHub.CommitParents);
+        Assert.Equal("D", pushed.Name);
+        Assert.Equal("local", pushed.Description);
+        Assert.True(harness.GitHub.Committed[2].HasSameFiles(expected));
+        await AssertStateAsync(harness, "commit-3", expected);
+    }
+
+    [Fact]
+    public async Task Sync_SerializesConcurrentCallsAndKeepsGateAfterCanceledWaiter()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.GitHub.BlockGetSnapshot = hold.Task;
+
+        var firstTask = harness.Sync();
+        await harness.GitHub.EnteredGetSnapshot.Task;
+        using var secondCts = new CancellationTokenSource();
+        var secondTask = harness.Sync(secondCts.Token);
+        await Task.Delay(150);
+
+        Assert.False(firstTask.IsCompleted);
+        Assert.False(secondTask.IsCompleted);
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.MaxGitHubInFlight);
+
+        secondCts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => secondTask);
+        Assert.False(firstTask.IsCompleted);
+
+        hold.SetResult();
+        var first = await firstTask;
+        var expected = Merge(@base, local, @base);
+
+        Assert.Equal(SyncOutcome.Pushed, first.Outcome);
+        Assert.Equal(1, harness.GitHub.MaxGitHubInFlight);
+        await AssertStateAsync(harness, "commit-1", expected);
+
+        var third = await harness.Sync();
+        Assert.Equal(SyncOutcome.UpToDate, third.Outcome);
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
+    [Fact]
+    public async Task Sync_SecondCallWaitsForFirstThenCompletesWithoutOverlappingGitHub()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.GitHub.BlockGetSnapshot = hold.Task;
+
+        var firstTask = harness.Sync();
+        await harness.GitHub.EnteredGetSnapshot.Task;
+        var secondTask = harness.Sync();
+        await Task.Delay(150);
+
+        Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(0, harness.GitHub.CommitCalls);
+        Assert.Equal(1, harness.GitHub.MaxGitHubInFlight);
+
+        hold.SetResult();
+        var first = await firstTask;
+        var second = await secondTask;
+        var expected = Merge(@base, local, @base);
+
+        Assert.Equal(SyncOutcome.Pushed, first.Outcome);
+        Assert.Equal(SyncOutcome.UpToDate, second.Outcome);
+        Assert.Equal(2, harness.GitHub.GetSnapshotCalls);
+        Assert.Equal(1, harness.GitHub.CommitCalls);
+        Assert.Equal(1, harness.GitHub.MaxGitHubInFlight);
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
     private static async Task AssertStateAsync(Harness harness, string commitSha, DataSnapshot snapshot)
     {
         var state = await harness.StateStore.LoadAsync();
@@ -485,6 +647,18 @@ public sealed class GitHubSyncServiceTests
             item.Form,
             item.Strength,
             item.Description,
+            item.KeepInStock);
+
+    private static InventoryItem Describe(InventoryItem item, string description, DateTimeOffset at) =>
+        item.Update(
+            at,
+            item.Name,
+            item.Aliases,
+            item.Category,
+            item.ActiveIngredients,
+            item.Form,
+            item.Strength,
+            description,
             item.KeepInStock);
 
     private static Package Package(string id, string itemId) =>
@@ -627,6 +801,12 @@ public sealed class GitHubSyncServiceTests
 
         public int CommitCalls { get; private set; }
 
+        public int MaxGitHubInFlight { get; private set; }
+
+        public Task? BlockGetSnapshot { get; set; }
+
+        public TaskCompletionSource EnteredGetSnapshot { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public List<string> CommitParents { get; } = [];
 
         public List<DataSnapshot> Committed { get; } = [];
@@ -637,14 +817,31 @@ public sealed class GitHubSyncServiceTests
 
         public Func<GitHubRemoteSnapshot, DataSnapshot, CancellationToken, Task>? BeforeCommit { get; set; }
 
-        public Task<GitHubRemoteSnapshot?> GetSnapshotAsync(
+        private int gitHubInFlight;
+
+        public async Task<GitHubRemoteSnapshot?> GetSnapshotAsync(
             SyncTarget target,
             string accessToken,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            GetSnapshotCalls++;
-            return Task.FromResult(Remote);
+            EnterGitHub();
+            try
+            {
+                GetSnapshotCalls++;
+                EnteredGetSnapshot.TrySetResult();
+                if (BlockGetSnapshot is not null && GetSnapshotCalls == 1)
+                {
+                    await BlockGetSnapshot;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                return Remote;
+            }
+            finally
+            {
+                LeaveGitHub();
+            }
         }
 
         public Task InitializeRepositoryAsync(
@@ -667,29 +864,48 @@ public sealed class GitHubSyncServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            CommitCalls++;
-            CommitParents.Add(remote.CommitSha);
-            Committed.Add(local);
-            if (BeforeCommit is not null)
+            EnterGitHub();
+            try
             {
-                await BeforeCommit(remote, local, cancellationToken);
-            }
-
-            if (CommitErrors.Count > 0)
-            {
-                var error = CommitErrors.Dequeue();
-                if (RemoteAfterFailure.Count > 0)
+                CommitCalls++;
+                CommitParents.Add(remote.CommitSha);
+                Committed.Add(local);
+                if (BeforeCommit is not null)
                 {
-                    Remote = RemoteAfterFailure.Dequeue();
+                    await BeforeCommit(remote, local, cancellationToken);
                 }
 
-                throw error;
-            }
+                if (CommitErrors.Count > 0)
+                {
+                    var error = CommitErrors.Dequeue();
+                    if (RemoteAfterFailure.Count > 0)
+                    {
+                        Remote = RemoteAfterFailure.Dequeue();
+                    }
 
-            var sha = $"commit-{CommitCalls}";
-            Remote = new GitHubRemoteSnapshot(sha, "tree-" + sha, local);
-            return sha;
+                    throw error;
+                }
+
+                var sha = $"commit-{CommitCalls}";
+                Remote = new GitHubRemoteSnapshot(sha, "tree-" + sha, local);
+                return sha;
+            }
+            finally
+            {
+                LeaveGitHub();
+            }
         }
+
+        private void EnterGitHub()
+        {
+            var inFlight = Interlocked.Increment(ref gitHubInFlight);
+            if (inFlight > MaxGitHubInFlight)
+            {
+                MaxGitHubInFlight = inFlight;
+            }
+        }
+
+        private void LeaveGitHub() => Interlocked.Decrement(ref gitHubInFlight);
     }
 
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
