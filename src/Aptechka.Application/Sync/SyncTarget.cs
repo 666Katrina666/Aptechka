@@ -18,13 +18,13 @@ public sealed partial record SyncTarget(string Owner, string Repository, string 
 
         if (!BranchPattern().IsMatch(Branch))
         {
-            throw new ArgumentException("P1 поддерживает простое имя ветки без слешей.", nameof(Branch));
+            throw new ArgumentException("Некорректное имя GitHub-ветки.", nameof(Branch));
         }
     }
 
     [GeneratedRegex("^[A-Za-z0-9_.-]+$")]
     private static partial Regex GitHubNamePattern();
 
-    [GeneratedRegex("^[A-Za-z0-9_.-]+$")]
+    [GeneratedRegex("^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")]
     private static partial Regex BranchPattern();
 }
