@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.ProblemsPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:ProblemsViewModel"
+    Title="Проблемы">
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Clicked="OnAddClicked" Text="Добавить" />
+    </ContentPage.ToolbarItems>
+
+    <Grid Padding="16" RowDefinitions="Auto,*" RowSpacing="12">
+        <SearchBar Placeholder="Название или другая формулировка" Text="{Binding SearchQuery}" />
+
+        <Grid Grid.Row="1">
+            <CollectionView
+                ItemsSource="{Binding Items}"
+                SelectionChanged="OnSelectionChanged"
+                SelectionMode="Single">
+                <CollectionView.ItemTemplate>
+                    <DataTemplate x:DataType="viewModels:ProblemListRow">
+                        <Grid Padding="4,10">
+                            <VerticalStackLayout Spacing="2">
+                                <Label
+                                    FontAttributes="Bold"
+                                    FontSize="18"
+                                    LineBreakMode="TailTruncation"
+                                    Text="{Binding Name}" />
+                                <Label
+                                    FontSize="13"
+                                    Text="{Binding Links}"
+                                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                <Label
+                                    FontSize="13"
+                                    IsVisible="{Binding HasNote}"
+                                    LineBreakMode="TailTruncation"
+                                    Text="{Binding Note}"
+                                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                            </VerticalStackLayout>
+                        </Grid>
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+
+            <Label
+                HorizontalOptions="Center"
+                HorizontalTextAlignment="Center"
+                IsVisible="{Binding IsEmpty}"
+                MaximumWidthRequest="320"
+                VerticalOptions="Center"
+                Text="{Binding EmptyMessage}"
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+        </Grid>
+    </Grid>
+</ContentPage>

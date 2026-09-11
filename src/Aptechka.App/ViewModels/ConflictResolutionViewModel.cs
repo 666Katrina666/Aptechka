@@ -75,6 +75,7 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
     private readonly ISecureTokenStore tokenStore;
     private readonly InventoryService inventoryService;
     private readonly PackageService packageService;
+    private readonly ProblemService problemService;
     private readonly AutoSyncScheduler scheduler;
     private readonly AppSyncLifetime syncLifetime;
     private SyncTarget? target;
@@ -88,6 +89,7 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         ISecureTokenStore tokenStore,
         InventoryService inventoryService,
         PackageService packageService,
+        ProblemService problemService,
         AutoSyncScheduler scheduler,
         AppSyncLifetime syncLifetime)
     {
@@ -95,6 +97,7 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         this.tokenStore = tokenStore;
         this.inventoryService = inventoryService;
         this.packageService = packageService;
+        this.problemService = problemService;
         this.scheduler = scheduler;
         this.syncLifetime = syncLifetime;
     }
@@ -256,17 +259,19 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
             return;
         }
 
+        var itemNames = await LoadItemNamesAsync(resolvable);
         var next = new List<ConflictChoiceRow>(resolvable.Length);
         foreach (var conflict in resolvable)
         {
             var item = await TryGetItemAsync(conflict);
             var (package, packageItem) = await TryGetPackageAsync(conflict);
+            var problem = await TryGetProblemAsync(conflict);
             next.Add(new ConflictChoiceRow(
                 conflict,
-                ConflictPresentation.EntityCaption(conflict, item, package, packageItem),
+                ConflictPresentation.EntityCaption(conflict, item, package, packageItem, problem),
                 ConflictPresentation.FieldCaption(conflict),
-                ConflictPresentation.FormatSide(conflict, SyncConflictSide.Local),
-                ConflictPresentation.FormatSide(conflict, SyncConflictSide.Remote),
+                ConflictPresentation.FormatSide(conflict, SyncConflictSide.Local, itemNames),
+                ConflictPresentation.FormatSide(conflict, SyncConflictSide.Remote, itemNames),
                 OnRowChanged));
         }
 
@@ -278,6 +283,43 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         ConflictPresentation.TryGetItemId(conflict.Path, out var id)
             ? await TryGetAsync(() => inventoryService.GetItemAsync(id))
             : null;
+
+    private async Task<Problem?> TryGetProblemAsync(SyncConflict conflict) =>
+        ConflictPresentation.TryGetProblemId(conflict.Path, out var id)
+            ? await TryGetAsync(() => problemService.GetProblemAsync(id))
+            : null;
+
+    private async Task<IReadOnlyDictionary<string, string>> LoadItemNamesAsync(
+        IReadOnlyList<SyncConflict> conflicts)
+    {
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var item in await inventoryService.GetCatalogAsync())
+            {
+                names[item.Id] = item.Name;
+            }
+        }
+        catch
+        {
+        }
+
+        foreach (var id in ConflictPresentation.CollectLinkedItemIds(conflicts))
+        {
+            if (names.ContainsKey(id))
+            {
+                continue;
+            }
+
+            var item = await TryGetAsync(() => inventoryService.GetItemAsync(id));
+            if (item is not null)
+            {
+                names[item.Id] = item.Name;
+            }
+        }
+
+        return names;
+    }
 
     private async Task<(Package? Package, InventoryItem? Item)> TryGetPackageAsync(SyncConflict conflict)
     {

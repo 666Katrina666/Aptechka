@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.ProblemEditorPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:ProblemEditorViewModel"
+    Title="{Binding Title}">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="16" Spacing="12" MaximumWidthRequest="720">
+            <Label
+                IsVisible="{Binding HasError}"
+                Text="{Binding ErrorMessage}"
+                TextColor="#B3261E" />
+
+            <Label Style="{StaticResource Body}" Text="Название" />
+            <Entry Placeholder="Например, Головная боль" Text="{Binding Name}" />
+
+            <Label Style="{StaticResource Body}" Text="Другие формулировки через запятую" />
+            <Entry Placeholder="болит голова" Text="{Binding Aliases}" />
+
+            <Label Style="{StaticResource Body}" Text="Заметка" />
+            <Editor
+                AutoSize="TextChanges"
+                MinimumHeightRequest="88"
+                Placeholder="Личная пометка"
+                Text="{Binding Note}" />
+
+            <BoxView HeightRequest="1" Color="{StaticResource Gray300}" />
+            <Label FontAttributes="Bold" Text="Отмечено для этой проблемы" />
+            <SearchBar Placeholder="Найти позицию" Text="{Binding ItemFilter}" />
+            <VerticalStackLayout BindableLayout.ItemsSource="{Binding VisibleLinks}" Spacing="8">
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate x:DataType="viewModels:ProblemItemLinkRow">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Padding="0,4">
+                            <VerticalStackLayout Spacing="2">
+                                <Label FontAttributes="Bold" LineBreakMode="TailTruncation" Text="{Binding Name}" />
+                                <Label
+                                    FontSize="13"
+                                    IsVisible="{Binding HasDetails}"
+                                    LineBreakMode="TailTruncation"
+                                    Text="{Binding Details}"
+                                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                <Label FontSize="13" Text="{Binding Availability}" />
+                                <Label
+                                    FontSize="13"
+                                    IsVisible="{Binding IsArchived}"
+                                    Text="Архивировано"
+                                    TextColor="#B3261E" />
+                            </VerticalStackLayout>
+                            <CheckBox Grid.Column="1" IsChecked="{Binding IsSelected}" VerticalOptions="Center" />
+                        </Grid>
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+
+            <Button Command="{Binding SaveCommand}" Text="Сохранить" />
+            <Button
+                BackgroundColor="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray600}}"
+                Clicked="OnArchiveClicked"
+                IsEnabled="{Binding CanArchive}"
+                IsVisible="{Binding IsEditing}"
+                Text="Архивировать"
+                TextColor="{AppThemeBinding Light={StaticResource Gray900}, Dark={StaticResource White}}" />
+
+            <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>

@@ -21,11 +21,15 @@ internal static class ConflictPresentation
     public static bool TryGetPackageId(string path, out string id) =>
         TryGetId(path, "packages/", out id);
 
+    public static bool TryGetProblemId(string path, out string id) =>
+        TryGetId(path, "problems/", out id);
+
     public static string EntityCaption(
         SyncConflict conflict,
         InventoryItem? item,
         Package? package,
-        InventoryItem? packageItem)
+        InventoryItem? packageItem,
+        Problem? problem)
     {
         if (TryDescribeJson(conflict.LocalValueJson, out var described) ||
             TryDescribeJson(conflict.RemoteValueJson, out described) ||
@@ -44,12 +48,22 @@ internal static class ConflictPresentation
             return PackageCaption(package.Label, package.ExpirationDate, package.ExpirationPrecision, packageItem?.Name);
         }
 
+        if (problem is not null)
+        {
+            return ProblemCaption(problem.Name);
+        }
+
         if (TryGetPackageId(conflict.Path, out _))
         {
             return "Упаковка";
         }
 
-        return TryGetItemId(conflict.Path, out _) ? "Позиция" : "Различие в данных";
+        if (TryGetItemId(conflict.Path, out _))
+        {
+            return "Позиция";
+        }
+
+        return TryGetProblemId(conflict.Path, out _) ? "Бытовая проблема" : "Различие в данных";
     }
 
     public static string FieldCaption(SyncConflict conflict) =>
@@ -61,7 +75,10 @@ internal static class ConflictPresentation
             _ => conflict.Field switch
             {
                 "name" => "Название",
-                "aliases" => "Другие названия",
+                "aliases" => TryGetProblemId(conflict.Path, out _)
+                    ? "Другие формулировки"
+                    : "Другие названия",
+                "itemIds" => "Связанные позиции",
                 "category" => "Категория",
                 "activeIngredients" => "Действующие вещества",
                 "form" => "Форма",
@@ -79,7 +96,10 @@ internal static class ConflictPresentation
             },
         };
 
-    public static string FormatSide(SyncConflict conflict, SyncConflictSide side)
+    public static string FormatSide(
+        SyncConflict conflict,
+        SyncConflictSide side,
+        IReadOnlyDictionary<string, string>? itemNames = null)
     {
         var json = side == SyncConflictSide.Local ? conflict.LocalValueJson : conflict.RemoteValueJson;
         if (json is null)
@@ -90,12 +110,25 @@ internal static class ConflictPresentation
         try
         {
             using var document = JsonDocument.Parse(json);
-            return FormatElement(document.RootElement, side);
+            return FormatElement(document.RootElement, conflict.Field, side, itemNames);
         }
         catch (JsonException)
         {
             return Fallback(side);
         }
+    }
+
+    public static IReadOnlyList<string> CollectLinkedItemIds(IEnumerable<SyncConflict> conflicts)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var conflict in conflicts)
+        {
+            CollectFromJson(conflict.BaseValueJson, conflict.Field, ids);
+            CollectFromJson(conflict.LocalValueJson, conflict.Field, ids);
+            CollectFromJson(conflict.RemoteValueJson, conflict.Field, ids);
+        }
+
+        return ids.Count == 0 ? [] : ids.ToArray();
     }
 
     public static bool IsDestructive(SyncConflict conflict, SyncConflictSide side)
@@ -117,7 +150,11 @@ internal static class ConflictPresentation
         }
     }
 
-    private static string FormatElement(JsonElement element, SyncConflictSide side) =>
+    private static string FormatElement(
+        JsonElement element,
+        string field,
+        SyncConflictSide side,
+        IReadOnlyDictionary<string, string>? itemNames) =>
         element.ValueKind switch
         {
             JsonValueKind.Null => Unspecified,
@@ -125,7 +162,7 @@ internal static class ConflictPresentation
             JsonValueKind.False => "Нет",
             JsonValueKind.Number => element.TryGetInt64(out var number) ? number.ToString(Russian) : Unspecified,
             JsonValueKind.String => FormatString(element.GetString()),
-            JsonValueKind.Array => FormatArray(element),
+            JsonValueKind.Array => FormatArray(element, field, itemNames),
             JsonValueKind.Object => FormatObject(element, side),
             _ => Fallback(side),
         };
@@ -150,7 +187,10 @@ internal static class ConflictPresentation
         };
     }
 
-    private static string FormatArray(JsonElement element)
+    private static string FormatArray(
+        JsonElement element,
+        string field,
+        IReadOnlyDictionary<string, string>? itemNames)
     {
         var parts = new List<string>();
         foreach (var item in element.EnumerateArray())
@@ -158,10 +198,12 @@ internal static class ConflictPresentation
             var text = item.ValueKind == JsonValueKind.String
                 ? item.GetString()
                 : null;
-            if (!string.IsNullOrWhiteSpace(text))
+            if (string.IsNullOrWhiteSpace(text))
             {
-                parts.Add(text);
+                continue;
             }
+
+            parts.Add(field == "itemIds" ? FormatItemLink(text, itemNames) : text);
         }
 
         return parts.Count == 0 ? Unspecified : string.Join(", ", parts);
@@ -174,6 +216,11 @@ internal static class ConflictPresentation
             return TryReadName(element, out var name)
                 ? $"{Archived}: {name}"
                 : Archived;
+        }
+
+        if (LooksLikeProblem(element))
+        {
+            return ProblemCaption(ReadString(element, "name"));
         }
 
         if (element.TryGetProperty("name", out _))
@@ -235,13 +282,80 @@ internal static class ConflictPresentation
     private static bool LooksLikeEntity(JsonElement element) =>
         element.TryGetProperty("name", out _) ||
         element.TryGetProperty("itemId", out _) ||
+        element.TryGetProperty("itemIds", out _) ||
         element.TryGetProperty("stockState", out _);
+
+    private static bool LooksLikeProblem(JsonElement element) =>
+        element.TryGetProperty("itemIds", out _) &&
+        !element.TryGetProperty("category", out _) &&
+        !element.TryGetProperty("stockState", out _);
 
     private static string ItemCaption(string? name, string? form, string? strength)
     {
         var parts = new[] { name, form, strength }.Where(static value => !string.IsNullOrWhiteSpace(value));
         var text = string.Join(", ", parts);
         return string.IsNullOrEmpty(text) ? "Позиция" : text;
+    }
+
+    private static string ProblemCaption(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? "Бытовая проблема" : name.Trim();
+
+    private static string FormatItemLink(string id, IReadOnlyDictionary<string, string>? itemNames)
+    {
+        if (itemNames is not null &&
+            itemNames.TryGetValue(id, out var name) &&
+            !string.IsNullOrWhiteSpace(name))
+        {
+            return name;
+        }
+
+        var shortId = id.Length <= 6 ? id : id[^6..];
+        return $"Позиция отсутствует · {shortId}";
+    }
+
+    private static void CollectFromJson(string? json, string field, HashSet<string> ids)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            CollectFromElement(document.RootElement, field, ids);
+        }
+        catch (JsonException)
+        {
+        }
+    }
+
+    private static void CollectFromElement(JsonElement element, string field, HashSet<string> ids)
+    {
+        if (element.ValueKind == JsonValueKind.Array && field == "itemIds")
+        {
+            AddIds(element, ids);
+            return;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty("itemIds", out var itemIds) &&
+            itemIds.ValueKind == JsonValueKind.Array)
+        {
+            AddIds(itemIds, ids);
+        }
+    }
+
+    private static void AddIds(JsonElement array, HashSet<string> ids)
+    {
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String &&
+                item.GetString() is { Length: > 0 } id)
+            {
+                ids.Add(id);
+            }
+        }
     }
 
     private static string PackageCaption(

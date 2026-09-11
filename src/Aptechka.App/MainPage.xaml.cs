@@ -42,6 +42,16 @@ public partial class MainPage : ContentPage
         base.OnDisappearing();
     }
 
+    private async void OnProblemsClicked(object? sender, EventArgs e)
+    {
+        if (viewModel.IsBusy)
+        {
+            return;
+        }
+
+        await Navigation.PushAsync(services.GetRequiredService<ProblemsPage>());
+    }
+
     private async void OnAddClicked(object? sender, EventArgs e)
     {
         if (viewModel.IsBusy)
@@ -190,9 +200,12 @@ public partial class MainPage : ContentPage
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if ((e.PropertyName is nameof(MainViewModel.IsBusy) or null) && ToolbarItems.Count > 0)
+        if (e.PropertyName is nameof(MainViewModel.IsBusy) or null)
         {
-            ToolbarItems[0].IsEnabled = !viewModel.IsBusy;
+            foreach (var item in ToolbarItems)
+            {
+                item.IsEnabled = !viewModel.IsBusy;
+            }
         }
     }
 }
