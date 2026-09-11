@@ -9,12 +9,13 @@ namespace Aptechka.Infrastructure.Storage;
 public sealed class FileInventoryRepository(
     string rootPath,
     IClock clock,
-    IIdGenerator idGenerator) : IInventoryRepository, IPackageRepository, IDataSnapshotStore
+    IIdGenerator idGenerator) : IInventoryRepository, IPackageRepository, IProblemRepository, IDataSnapshotStore
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string manifestPath = Path.Combine(rootPath, "aptechka.json");
     private readonly string itemsPath = Path.Combine(rootPath, "items");
     private readonly string packagesPath = Path.Combine(rootPath, "packages");
+    private readonly string problemsPath = Path.Combine(rootPath, "problems");
 
     public async Task<IReadOnlyList<InventoryItem>> GetItemsAsync(
         CancellationToken cancellationToken = default)
@@ -107,6 +108,55 @@ public sealed class FileInventoryRepository(
 
             var packagePath = Path.Combine(packagesPath, $"{package.Id}.json");
             await WriteJsonAtomicallyAsync(packagePath, package, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<Problem>> GetProblemsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!Directory.Exists(problemsPath))
+            {
+                return [];
+            }
+
+            var problems = new List<Problem>();
+            foreach (var path in Directory.EnumerateFiles(problemsPath, "*.json"))
+            {
+                var problem = await ReadJsonAsync<Problem>(path, cancellationToken);
+                problem.EnsureValid();
+                problems.Add(problem);
+            }
+
+            return problems.OrderBy(static problem => problem.CreatedAt).ToArray();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task SaveProblemAsync(
+        Problem problem,
+        CancellationToken cancellationToken = default)
+    {
+        problem.EnsureValid();
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(rootPath);
+            Directory.CreateDirectory(problemsPath);
+            await EnsureManifestAsync(cancellationToken);
+
+            var problemPath = Path.Combine(problemsPath, $"{problem.Id}.json");
+            await WriteJsonAtomicallyAsync(problemPath, problem, cancellationToken);
         }
         finally
         {
@@ -323,25 +373,36 @@ public sealed class FileInventoryRepository(
         }
 
         var snapshotPackagesPath = Path.Combine(snapshotRoot, "packages");
-        if (!Directory.Exists(snapshotPackagesPath))
+        if (Directory.Exists(snapshotPackagesPath))
+        {
+            foreach (var packagePath in Directory.EnumerateFiles(snapshotPackagesPath, "*.json"))
+            {
+                var package = await ReadJsonAsync<Package>(packagePath, cancellationToken);
+                package.EnsureValid();
+                EnsureFileNameMatchesId(packagePath, package.Id, "упаковки");
+                if (!items.TryGetValue(package.ItemId, out var item))
+                {
+                    throw new InvalidDataException("Упаковка ссылается на отсутствующую позицию.");
+                }
+
+                if (package.DeletedAt is null && item.DeletedAt is not null)
+                {
+                    throw new InvalidDataException("Активная упаковка не может ссылаться на архивную позицию.");
+                }
+            }
+        }
+
+        var snapshotProblemsPath = Path.Combine(snapshotRoot, "problems");
+        if (!Directory.Exists(snapshotProblemsPath))
         {
             return;
         }
 
-        foreach (var packagePath in Directory.EnumerateFiles(snapshotPackagesPath, "*.json"))
+        foreach (var problemPath in Directory.EnumerateFiles(snapshotProblemsPath, "*.json"))
         {
-            var package = await ReadJsonAsync<Package>(packagePath, cancellationToken);
-            package.EnsureValid();
-            EnsureFileNameMatchesId(packagePath, package.Id, "упаковки");
-            if (!items.TryGetValue(package.ItemId, out var item))
-            {
-                throw new InvalidDataException("Упаковка ссылается на отсутствующую позицию.");
-            }
-
-            if (package.DeletedAt is null && item.DeletedAt is not null)
-            {
-                throw new InvalidDataException("Активная упаковка не может ссылаться на архивную позицию.");
-            }
+            var problem = await ReadJsonAsync<Problem>(problemPath, cancellationToken);
+            problem.EnsureValid();
+            EnsureFileNameMatchesId(problemPath, problem.Id, "проблемы");
         }
     }
 
@@ -361,7 +422,8 @@ public sealed class FileInventoryRepository(
         }
 
         return IsEntityJsonPath(relativePath, "items/") ||
-               IsEntityJsonPath(relativePath, "packages/");
+               IsEntityJsonPath(relativePath, "packages/") ||
+               IsEntityJsonPath(relativePath, "problems/");
     }
 
     private static bool IsEntityJsonPath(string relativePath, string prefix)

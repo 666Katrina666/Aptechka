@@ -288,7 +288,8 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
     private static bool IsDataPath(string path) =>
         string.Equals(path, "aptechka.json", StringComparison.Ordinal) ||
         IsEntityJsonPath(path, "items/") ||
-        IsEntityJsonPath(path, "packages/");
+        IsEntityJsonPath(path, "packages/") ||
+        IsEntityJsonPath(path, "problems/");
 
     private static bool IsEntityJsonPath(string path, string prefix) =>
         path.StartsWith(prefix, StringComparison.Ordinal) &&

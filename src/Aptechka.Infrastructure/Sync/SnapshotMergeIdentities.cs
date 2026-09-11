@@ -64,4 +64,23 @@ internal static class SnapshotMergeIdentities
             throw new InvalidDataException($"Нельзя изменить itemId упаковки: {path}");
         }
     }
+
+    public static void EnsureProblemIdImmutable(
+        string path,
+        Problem @base,
+        Problem? local,
+        Problem? remote)
+    {
+        if (local is not null &&
+            !string.Equals(local.Id, @base.Id, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Нельзя изменить id проблемы: {path}");
+        }
+
+        if (remote is not null &&
+            !string.Equals(remote.Id, @base.Id, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Нельзя изменить id проблемы: {path}");
+        }
+    }
 }

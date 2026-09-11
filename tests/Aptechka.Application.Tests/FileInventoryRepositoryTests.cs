@@ -14,6 +14,7 @@ public sealed class FileInventoryRepositoryTests : IDisposable
     private const string SecondId = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
     private const string FirstPackageId = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
     private const string SecondPackageId = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+    private const string ProblemId = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
 
     private readonly string rootPath = Path.Combine(
         Path.GetTempPath(),
@@ -310,6 +311,86 @@ public sealed class FileInventoryRepositoryTests : IDisposable
         Assert.True((await repository.ReadAsync()).HasSameFiles(second));
     }
 
+    [Fact]
+    public async Task SaveProblem_WritesEachProblemToItsOwnFile()
+    {
+        var repository = CreateRepository();
+        var problem = CreateProblem(ProblemId, "Головная боль", [FirstId], "дома");
+
+        await repository.SaveProblemAsync(problem);
+
+        var problemPath = Path.Combine(rootPath, "problems", $"{ProblemId}.json");
+        Assert.True(File.Exists(problemPath));
+        Assert.Empty(Directory.EnumerateFiles(rootPath, "*.tmp", SearchOption.AllDirectories));
+
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(problemPath));
+        Assert.Equal(ProblemId, document.RootElement.GetProperty("id").GetString());
+        Assert.Equal("Головная боль", document.RootElement.GetProperty("name").GetString());
+        Assert.Equal("болит голова", document.RootElement.GetProperty("aliases")[0].GetString());
+        Assert.Equal(FirstId, document.RootElement.GetProperty("itemIds")[0].GetString());
+        Assert.Equal("дома", document.RootElement.GetProperty("note").GetString());
+
+        var loaded = Assert.Single(await repository.GetProblemsAsync());
+        Assert.Equal(problem.Name, loaded.Name);
+        Assert.Equal(problem.Aliases, loaded.Aliases);
+        Assert.Equal(problem.ItemIds, loaded.ItemIds);
+        Assert.Equal(problem.Note, loaded.Note);
+    }
+
+    [Fact]
+    public async Task ReadAsync_KeepsProblemTombstoneInSnapshot()
+    {
+        var repository = CreateRepository();
+        var problem = CreateProblem(ProblemId, "Головная боль", [FirstId], null);
+        await repository.SaveProblemAsync(problem);
+        await repository.SaveProblemAsync(problem.Delete(Now.AddMinutes(3)));
+
+        var snapshot = await repository.ReadAsync();
+        var relativePath = $"problems/{ProblemId}.json";
+        Assert.True(snapshot.Files.ContainsKey(relativePath));
+        using var document = JsonDocument.Parse(Encoding.UTF8.GetString(snapshot.Files[relativePath]));
+        Assert.Equal(2, document.RootElement.GetProperty("revision").GetInt32());
+        Assert.NotEqual(JsonValueKind.Null, document.RootElement.GetProperty("deletedAt").ValueKind);
+        Assert.True(File.Exists(Path.Combine(rootPath, "problems", $"{ProblemId}.json")));
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_AcceptsP4SnapshotWithoutProblems()
+    {
+        var repository = CreateRepository();
+
+        await repository.ReplaceAsync(Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)),
+            ($"packages/{FirstPackageId}.json", PackageJson(FirstPackageId, FirstId, deleted: false))));
+
+        Assert.Equal("Ибупрофен", Assert.Single(await repository.GetItemsAsync()).Name);
+        Assert.Single(await repository.GetPackagesAsync());
+        Assert.Empty(await repository.GetProblemsAsync());
+        Assert.False(Directory.Exists(Path.Combine(rootPath, "problems")));
+    }
+
+    [Fact]
+    public async Task TryReplaceAsync_DoesNotLoseProblems()
+    {
+        var repository = CreateRepository();
+        var original = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)),
+            ($"problems/{ProblemId}.json", ProblemJson(ProblemId, "Головная боль", FirstId, deleted: false)));
+        var replacement = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Нурофен", deleted: false)),
+            ($"problems/{ProblemId}.json", ProblemJson(ProblemId, "Головная боль", FirstId, deleted: false)));
+        await repository.ReplaceAsync(original);
+
+        Assert.True(await repository.TryReplaceAsync(original, replacement));
+        var loaded = await repository.ReadAsync();
+        Assert.True(loaded.HasSameFiles(replacement));
+        Assert.True(loaded.Files.ContainsKey($"problems/{ProblemId}.json"));
+        Assert.Equal("Головная боль", Assert.Single(await repository.GetProblemsAsync()).Name);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(rootPath))
@@ -349,6 +430,9 @@ public sealed class FileInventoryRepositoryTests : IDisposable
             null,
             StockState.Available,
             null);
+
+    private static Problem CreateProblem(string id, string name, IReadOnlyList<string> itemIds, string? note) =>
+        Problem.Create(id, Now, name, ["болит голова"], itemIds, note);
 
     private static DataSnapshot Snapshot(params (string Path, string Content)[] files) => new(
         files.ToDictionary(
@@ -400,6 +484,21 @@ public sealed class FileInventoryRepositoryTests : IDisposable
           "openedDate": null,
           "shelfLifeAfterOpeningDays": null,
           "stockState": "available",
+          "note": null
+        }
+        """;
+
+    private static string ProblemJson(string id, string name, string itemId, bool deleted) =>
+        $$"""
+        {
+          "id": "{{id}}",
+          "revision": 1,
+          "createdAt": "2026-08-31T18:30:00+00:00",
+          "updatedAt": "2026-08-31T18:30:00+00:00",
+          "deletedAt": {{(deleted ? "\"2026-08-31T19:00:00+00:00\"" : "null")}},
+          "name": "{{name}}",
+          "aliases": ["болит голова"],
+          "itemIds": ["{{itemId}}"],
           "note": null
         }
         """;

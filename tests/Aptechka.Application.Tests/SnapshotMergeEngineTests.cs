@@ -12,6 +12,7 @@ public sealed class SnapshotMergeEngineTests
     private const string ItemId = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     private const string SecondItemId = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
     private const string PackageId = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+    private const string ProblemId = "01ARZ3NDEKTSV4RRFFQ69G5FB0";
     private const string DatasetId = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 
     private static readonly DateTimeOffset T0 = new(2026, 8, 31, 8, 0, 0, TimeSpan.Zero);
@@ -681,6 +682,152 @@ public sealed class SnapshotMergeEngineTests
         Assert.Equal(DatasetId, manifest.DatasetId);
     }
 
+    [Fact]
+    public void Merge_MergesIndependentProblemScalars()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var problem = Problem(ProblemId, "Головная боль");
+        var local = problem.Update(T1, "Мигрень", problem.Aliases, problem.ItemIds, problem.Note);
+        var remote = problem.Update(T2, problem.Name, problem.Aliases, problem.ItemIds, "дома");
+
+        var merged = ReadProblem(
+            Merge(
+                Snap(File(Manifest()), File(item), File(problem)),
+                Snap(File(Manifest()), File(item), File(local)),
+                Snap(File(Manifest()), File(item), File(remote))),
+            ProblemId);
+
+        Assert.Equal("Мигрень", merged.Name);
+        Assert.Equal("дома", merged.Note);
+        Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+        Assert.Equal(T0, merged.CreatedAt);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenTheSameProblemScalarChangesDifferently()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var problem = Problem(ProblemId, "Головная боль");
+        var local = problem.Update(T1, "Мигрень", problem.Aliases, problem.ItemIds, problem.Note);
+        var remote = problem.Update(T2, "Давление", problem.Aliases, problem.ItemIds, problem.Note);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(item), File(problem)),
+            Snap(File(Manifest()), File(item), File(local)),
+            Snap(File(Manifest()), File(item), File(remote)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal(SyncConflictKind.FieldChangedBoth, conflict.Kind);
+        Assert.Equal("name", conflict.Field);
+        Assert.Equal(ProblemPath(ProblemId), conflict.Path);
+        Assert.Equal("\"Головная боль\"", conflict.BaseValueJson);
+        Assert.Equal("\"Мигрень\"", conflict.LocalValueJson);
+        Assert.Equal("\"Давление\"", conflict.RemoteValueJson);
+    }
+
+    [Fact]
+    public void Merge_UnionsIndependentProblemAliasAdditions()
+    {
+        var problem = Problem(ProblemId, "Головная боль");
+        var local = problem.Update(T1, problem.Name, ["болит голова"], problem.ItemIds, problem.Note);
+        var remote = problem.Update(T2, problem.Name, ["мигрень"], problem.ItemIds, problem.Note);
+
+        var merged = ReadProblem(
+            Merge(Snap(File(Manifest()), File(problem)), Snap(File(Manifest()), File(local)), Snap(File(Manifest()), File(remote))),
+            ProblemId);
+
+        Assert.Equal(["болит голова", "мигрень"], merged.Aliases);
+    }
+
+    [Fact]
+    public void Merge_MergesIndependentProblemItemIdAdditionsAndRemovals()
+    {
+        var problem = Problem(ProblemId, "Головная боль").Update(T0, "Головная боль", [], [ItemId, SecondItemId], null);
+        var local = problem.Update(T1, problem.Name, problem.Aliases, [ItemId, PackageId], problem.Note);
+        var remote = problem.Update(T2, problem.Name, problem.Aliases, [SecondItemId], problem.Note);
+
+        var merged = ReadProblem(
+            Merge(Snap(File(Manifest()), File(problem)), Snap(File(Manifest()), File(local)), Snap(File(Manifest()), File(remote))),
+            ProblemId);
+
+        Assert.Equal([PackageId], merged.ItemIds);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenProblemTombstoneCompetesWithAUserChange()
+    {
+        var problem = Problem(ProblemId, "Головная боль");
+        var tombstone = problem.Delete(T1);
+        var remote = problem.Update(T2, "Мигрень", problem.Aliases, problem.ItemIds, problem.Note);
+
+        var result = Merge(
+            Snap(File(Manifest()), File(problem)),
+            Snap(File(Manifest()), File(tombstone)),
+            Snap(File(Manifest()), File(remote)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, conflict.Kind);
+        Assert.Equal("deletedAt", conflict.Field);
+    }
+
+    [Fact]
+    public void Merge_MergesProblemTombstonesFromBothSides()
+    {
+        var problem = Problem(ProblemId, "Головная боль");
+        var local = problem.Delete(T1);
+        var remote = problem.Delete(T2);
+
+        var merged = ReadProblem(
+            Merge(Snap(File(Manifest()), File(problem)), Snap(File(Manifest()), File(local)), Snap(File(Manifest()), File(remote))),
+            ProblemId);
+
+        Assert.Equal(T1, merged.DeletedAt);
+        Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenProblemJsonIdDoesNotMatchPath()
+    {
+        var problem = Problem(ProblemId, "Головная боль");
+        var mismatch = Bytes(problem with { Id = ItemId });
+
+        var exception = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(problem)),
+                Snap(File(Manifest()), (ProblemPath(ProblemId), mismatch)),
+                Snap(File(Manifest()), File(problem))));
+
+        Assert.Contains(ProblemPath(ProblemId), exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Головная боль", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_KeepsItemsPackagesAndProblemsTogether()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var problem = Problem(ProblemId, "Головная боль");
+        var localItem = item.Update(T1, "Нурофен", item.Aliases, item.Category, item.ActiveIngredients, item.Form, item.Strength, item.Description, item.KeepInStock);
+        var remotePackage = package.Update(T2, "блистер", package.ExpirationDate, package.ExpirationPrecision, package.OpenedDate, package.ShelfLifeAfterOpeningDays, package.StockState, package.Note);
+        var remoteProblem = problem.Update(T2, problem.Name, ["болит голова"], [ItemId], problem.Note);
+
+        var merged = Merge(
+            Snap(File(Manifest()), File(item), File(package), File(problem)),
+            Snap(File(Manifest()), File(localItem), File(package), File(problem)),
+            Snap(File(Manifest()), File(item), File(remotePackage), File(remoteProblem)));
+
+        Assert.False(merged.HasConflicts);
+        Assert.Equal("Нурофен", ReadItem(merged, ItemId).Name);
+        Assert.Equal("блистер", ReadPackage(merged, PackageId).Label);
+        Assert.Equal(["болит голова"], ReadProblem(merged, ProblemId).Aliases);
+        Assert.True(merged.MergedSnapshot!.Files.ContainsKey(ItemPath(ItemId)));
+        Assert.True(merged.MergedSnapshot.Files.ContainsKey(PackagePath(PackageId)));
+        Assert.True(merged.MergedSnapshot.Files.ContainsKey(ProblemPath(ProblemId)));
+    }
+
     private SnapshotMergeResult Merge(DataSnapshot @base, DataSnapshot local, DataSnapshot remote) =>
         engine.Merge(@base, local, remote, MergedAt);
 
@@ -699,6 +846,15 @@ public sealed class SnapshotMergeEngineTests
         Assert.NotNull(result.MergedSnapshot);
         return JsonSerializer.Deserialize<Package>(
             result.MergedSnapshot.Files[PackagePath(id)],
+            AptechkaJson.Options)!;
+    }
+
+    private static Problem ReadProblem(SnapshotMergeResult result, string id)
+    {
+        Assert.False(result.HasConflicts);
+        Assert.NotNull(result.MergedSnapshot);
+        return JsonSerializer.Deserialize<Problem>(
+            result.MergedSnapshot.Files[ProblemPath(id)],
             AptechkaJson.Options)!;
     }
 
@@ -731,6 +887,9 @@ public sealed class SnapshotMergeEngineTests
             StockState.Available,
             null);
 
+    private static Problem Problem(string id, string name) =>
+        Domain.Inventory.Problem.Create(id, T0, name, [], [], null);
+
     private static DatasetManifest Manifest() =>
         new(DatasetManifest.CurrentSchemaVersion, DatasetId, T0);
 
@@ -741,6 +900,8 @@ public sealed class SnapshotMergeEngineTests
 
     private static (string Path, byte[] Content) File(Package package) => (PackagePath(package.Id), Bytes(package));
 
+    private static (string Path, byte[] Content) File(Problem problem) => (ProblemPath(problem.Id), Bytes(problem));
+
     private static (string Path, byte[] Content) File(DatasetManifest manifest) => ("aptechka.json", Bytes(manifest));
 
     private static byte[] Bytes<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, AptechkaJson.Options);
@@ -748,4 +909,6 @@ public sealed class SnapshotMergeEngineTests
     private static string ItemPath(string id) => $"items/{id}.json";
 
     private static string PackagePath(string id) => $"packages/{id}.json";
+
+    private static string ProblemPath(string id) => $"problems/{id}.json";
 }

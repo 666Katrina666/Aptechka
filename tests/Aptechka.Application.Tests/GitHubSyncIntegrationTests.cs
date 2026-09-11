@@ -128,6 +128,48 @@ public sealed class GitHubSyncIntegrationTests
         Assert.True(snapshot.Files.ContainsKey($"packages/{created.Id}.json"));
     }
 
+    [GitHubIntegrationFact]
+    [Trait("Category", "Integration")]
+    public async Task RoundTrip_PushesThenPullsOneProblem()
+    {
+        await using var session = await IsolatedBranch.CreateAsync();
+        await using var first = CreateContext();
+        await session.SyncAsync(first, "integration-problem-first");
+        var item = await first.InventoryService.CreateAsync(new InventoryItemDraft(
+            $"P5A problem item {Guid.NewGuid():N}",
+            [],
+            InventoryItemCategory.MedicalSupply,
+            [],
+            null,
+            null,
+            "Temporary problem roundtrip",
+            false));
+        var created = await first.ProblemService.CreateAsync(new ProblemDraft(
+            $"P5A household problem {Guid.NewGuid():N}",
+            ["болит голова"],
+            [item.Id],
+            null));
+
+        var pushed = await session.SyncAsync(first, "integration-problem-first");
+        Assert.Equal(SyncOutcome.Pushed, pushed.Outcome);
+        Assert.True((await first.Repository.ReadAsync()).Files.ContainsKey($"problems/{created.Id}.json"));
+
+        await using var second = CreateContext();
+        var pulled = await session.SyncAsync(second, "integration-problem-second");
+        var loadedProblem = await second.ProblemService.GetProblemAsync(created.Id);
+        var snapshot = await second.Repository.ReadAsync();
+
+        Assert.Equal(SyncOutcome.Pulled, pulled.Outcome);
+        Assert.NotNull(loadedProblem);
+        Assert.Null(loadedProblem.DeletedAt);
+        Assert.Equal(created.Id, loadedProblem.Id);
+        Assert.Equal(created.Name, loadedProblem.Name);
+        Assert.Equal(["болит голова"], loadedProblem.Aliases);
+        Assert.Equal([item.Id], loadedProblem.ItemIds);
+        Assert.True(snapshot.Files.ContainsKey($"problems/{created.Id}.json"));
+        Assert.True(snapshot.Files.ContainsKey($"items/{item.Id}.json"));
+    }
+
     private static IntegrationContext CreateContext()
     {
         var root = Path.Combine(Path.GetTempPath(), "aptechka-integration", Guid.NewGuid().ToString("N"));
@@ -152,6 +194,7 @@ public sealed class GitHubSyncIntegrationTests
             repository,
             new InventoryService(repository, repository, clock, idGenerator),
             new PackageService(repository, repository, clock, idGenerator),
+            new ProblemService(repository, clock, idGenerator),
             syncService);
     }
 
@@ -358,11 +401,13 @@ public sealed class GitHubSyncIntegrationTests
         FileInventoryRepository repository,
         InventoryService inventoryService,
         PackageService packageService,
+        ProblemService problemService,
         GitHubSyncService syncService) : IAsyncDisposable
     {
         public FileInventoryRepository Repository { get; } = repository;
         public InventoryService InventoryService { get; } = inventoryService;
         public PackageService PackageService { get; } = packageService;
+        public ProblemService ProblemService { get; } = problemService;
         public GitHubSyncService SyncService { get; } = syncService;
 
         public ValueTask DisposeAsync()

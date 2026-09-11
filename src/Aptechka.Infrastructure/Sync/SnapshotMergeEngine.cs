@@ -92,6 +92,12 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
+        if (IsEntityPath(path, SnapshotMergeProblems.PathPrefix, out _))
+        {
+            MergeProblem(path, baseBytes, localBytes, remoteBytes, mergedAt, resolutions, merged, conflicts);
+            return;
+        }
+
         if (localBytes is null && remoteBytes is null)
         {
             return;
@@ -111,7 +117,8 @@ public sealed class SnapshotMergeEngine
         }
 
         if (path.StartsWith("items/", StringComparison.Ordinal) ||
-            path.StartsWith("packages/", StringComparison.Ordinal))
+            path.StartsWith("packages/", StringComparison.Ordinal) ||
+            path.StartsWith(SnapshotMergeProblems.PathPrefix, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"Путь не соответствует сущности: {path}");
         }
@@ -436,6 +443,108 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(package));
     }
 
+    private static void MergeProblem(
+        string path,
+        byte[]? baseBytes,
+        byte[]? localBytes,
+        byte[]? remoteBytes,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var @base = ReadProblem(path, baseBytes);
+        var local = ReadProblem(path, localBytes);
+        var remote = ReadProblem(path, remoteBytes);
+        if (@base is not null)
+        {
+            SnapshotMergeIdentities.EnsureProblemIdImmutable(path, @base, local, remote);
+        }
+
+        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts))
+        {
+            return;
+        }
+
+        if (@base is null)
+        {
+            if (JsonEquals(path, localBytes, remoteBytes))
+            {
+                Accept(merged, path, localBytes);
+                return;
+            }
+
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
+            return;
+        }
+
+        if (SnapshotMergeProblems.UsersEqual(local!, remote!))
+        {
+            AcceptProblem(merged, path, @base, local!, remote!, localBytes!, mergedAt);
+            return;
+        }
+
+        if (SnapshotMergeProblems.UsersEqual(local!, @base))
+        {
+            Accept(merged, path, remoteBytes);
+            return;
+        }
+
+        if (SnapshotMergeProblems.UsersEqual(remote!, @base))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        if (IsDeleted(local!) != IsDeleted(remote!))
+        {
+            RecordDeleteVsModify(
+                path,
+                @base,
+                local!,
+                remote!,
+                mergedAt,
+                resolutions,
+                merged,
+                conflicts);
+            return;
+        }
+
+        var fieldConflicts = new List<SyncConflict>();
+        var name = MergeScalar(path, "name", @base.Name, local!.Name, remote!.Name, resolutions, fieldConflicts);
+        var note = MergeScalar(path, "note", @base.Note, local.Note, remote.Note, resolutions, fieldConflicts);
+        var aliases = MergeStringSet(@base.Aliases, local.Aliases, remote.Aliases);
+        var itemIds = SnapshotMergeProblems.MergeItemIds(@base.ItemIds, local.ItemIds, remote.ItemIds);
+        var deletedAt = MergeDeletedAt(@base, local, remote);
+
+        if (fieldConflicts.Count > 0)
+        {
+            conflicts.AddRange(fieldConflicts);
+            return;
+        }
+
+        var problem = new Problem(
+            local.Id,
+            Math.Max(local.Revision, remote.Revision) + 1,
+            Earlier(@base.CreatedAt, local.CreatedAt, remote.CreatedAt),
+            mergedAt,
+            deletedAt,
+            name!,
+            aliases,
+            itemIds,
+            note);
+        ValidateEntity(path, problem);
+        Accept(merged, path, Serialize(problem));
+    }
+
     private static bool TryMergeFilePresence(
         string path,
         byte[]? baseBytes,
@@ -606,6 +715,32 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(package));
     }
 
+    private static void AcceptProblem(
+        Dictionary<string, byte[]> merged,
+        string path,
+        Problem @base,
+        Problem local,
+        Problem remote,
+        byte[] localBytes,
+        DateTimeOffset mergedAt)
+    {
+        if (SnapshotMergeProblems.UsersEqual(local, @base))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        var problem = SnapshotMergeProblems.WithMergedMetadata(
+            local,
+            @base,
+            local,
+            remote,
+            mergedAt,
+            MergeDeletedAt(@base, local, remote));
+        ValidateEntity(path, problem);
+        Accept(merged, path, Serialize(problem));
+    }
+
     private static void RecordFileConflict(
         string path,
         SyncConflictKind kind,
@@ -694,6 +829,41 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(package));
     }
 
+    private static void RecordDeleteVsModify(
+        string path,
+        Problem @base,
+        Problem local,
+        Problem remote,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var conflict = FieldConflict(
+            path,
+            "deletedAt",
+            SyncConflictKind.DeleteVsModify,
+            @base,
+            local,
+            remote);
+        if (!resolutions.TryResolve(conflict, out var side))
+        {
+            conflicts.Add(conflict);
+            return;
+        }
+
+        var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
+        var problem = SnapshotMergeProblems.WithMergedMetadata(
+            chosen,
+            @base,
+            local,
+            remote,
+            mergedAt,
+            chosen.DeletedAt);
+        ValidateEntity(path, problem);
+        Accept(merged, path, Serialize(problem));
+    }
+
     private static T MergeScalar<T>(
         string path,
         string field,
@@ -732,6 +902,9 @@ public sealed class SnapshotMergeEngine
         MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
 
     private static DateTimeOffset? MergeDeletedAt(Package @base, Package local, Package remote) =>
+        MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
+
+    private static DateTimeOffset? MergeDeletedAt(Problem @base, Problem local, Problem remote) =>
         MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
 
     private static DateTimeOffset? MergeDeletedAt(
@@ -852,6 +1025,8 @@ public sealed class SnapshotMergeEngine
 
     private static bool IsDeleted(Package package) => package.DeletedAt is not null;
 
+    private static bool IsDeleted(Problem problem) => problem.DeletedAt is not null;
+
     private static Expiration ExpirationOf(Package package) =>
         new(package.ExpirationDate, package.ExpirationPrecision);
 
@@ -900,6 +1075,12 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
+        if (IsEntityPath(path, SnapshotMergeProblems.PathPrefix, out _))
+        {
+            ReadProblem(path, content);
+            return;
+        }
+
         ParseJson(path, content);
     }
 
@@ -929,6 +1110,17 @@ public sealed class SnapshotMergeEngine
 
     private static Package? ReadPackage(string path, byte[]? bytes) =>
         ReadEntity<Package>(path, bytes, static (entity, id, entityPath) =>
+        {
+            if (!string.Equals(entity.Id, id, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Идентификатор в JSON не совпадает с путём: {entityPath}");
+            }
+
+            entity.EnsureValid();
+        });
+
+    private static Problem? ReadProblem(string path, byte[]? bytes) =>
+        ReadEntity<Problem>(path, bytes, static (entity, id, entityPath) =>
         {
             if (!string.Equals(entity.Id, id, StringComparison.Ordinal))
             {
@@ -988,6 +1180,11 @@ public sealed class SnapshotMergeEngine
             return "packages/";
         }
 
+        if (typeof(T) == typeof(Problem))
+        {
+            return SnapshotMergeProblems.PathPrefix;
+        }
+
         throw new InvalidOperationException(typeof(T).Name);
     }
 
@@ -1021,6 +1218,18 @@ public sealed class SnapshotMergeEngine
         try
         {
             package.EnsureValid();
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException($"Нарушены инварианты данных: {path}", exception);
+        }
+    }
+
+    private static void ValidateEntity(string path, Problem problem)
+    {
+        try
+        {
+            problem.EnsureValid();
         }
         catch (InvalidOperationException exception)
         {
