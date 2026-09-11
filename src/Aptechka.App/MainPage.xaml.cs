@@ -60,12 +60,14 @@ public partial class MainPage : ContentPage
 
             page.Unloaded -= unloaded;
             page.Resolved -= resolved;
+            page.Failed -= OnConflictResolutionFailed;
             pendingConflicts.Remove(pending);
         };
 
         pendingConflicts.Add(pending);
         page.Resolved += resolved;
         page.Unloaded += unloaded;
+        page.Failed += OnConflictResolutionFailed;
         await Navigation.PushAsync(page);
     }
 
@@ -82,6 +84,7 @@ public partial class MainPage : ContentPage
 
         pending.Page.Resolved -= resolved;
         pending.Page.Unloaded -= unloaded;
+        pending.Page.Failed -= OnConflictResolutionFailed;
         pendingConflicts.Remove(pending);
 
         try
@@ -97,6 +100,9 @@ public partial class MainPage : ContentPage
 
         await viewModel.CompleteConflictResolutionAsync(result);
     }
+
+    private void OnConflictResolutionFailed(object? sender, SyncFailureKind kind) =>
+        viewModel.ShowSyncFailure(kind);
 
     private sealed class PendingConflictResolution(ConflictResolutionPage page)
     {

@@ -97,6 +97,8 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
 
     public event EventHandler<SyncResult>? Completed;
 
+    public event EventHandler<SyncFailureKind>? Failed;
+
     public IReadOnlyList<ConflictChoiceRow> Rows
     {
         get => rows;
@@ -164,7 +166,7 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
             var token = await tokenStore.GetTokenAsync() ?? string.Empty;
             if (token.Length == 0)
             {
-                Status = "Сначала введи GitHub-токен.";
+                Status = SyncStatusText.Detail(SyncFailureKind.Authentication);
                 return;
             }
 
@@ -195,11 +197,17 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
                 return;
             }
 
-            Status = result.Message;
+            Status = SyncStatusText.Detail(SyncFailureKind.Unknown);
         }
-        catch (Exception exception)
+        catch (SyncFailureException exception)
         {
-            Status = $"Не удалось применить решения: {exception.Message}";
+            Status = SyncStatusText.Detail(exception.Kind);
+            Failed?.Invoke(this, exception.Kind);
+        }
+        catch (Exception)
+        {
+            Status = SyncStatusText.Detail(SyncFailureKind.Unknown);
+            Failed?.Invoke(this, SyncFailureKind.Unknown);
         }
         finally
         {

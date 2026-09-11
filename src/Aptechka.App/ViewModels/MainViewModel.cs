@@ -37,6 +37,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly InventoryService inventoryService;
     private readonly PackageService packageService;
     private readonly ISyncService syncService;
+    private readonly ISyncStateInspector syncStateInspector;
     private readonly ISecureTokenStore tokenStore;
     private int refreshEpoch;
     private string searchQuery = string.Empty;
@@ -46,18 +47,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string branch;
     private string tokenInput = string.Empty;
     private bool hasSavedToken;
-    private string status = "Локальные данные ещё не загружены.";
+    private bool pinSessionStatus;
+    private SyncUiState syncState = SyncUiState.NotConfigured;
+    private string syncHeadline = SyncStatusText.Headline(SyncUiState.NotConfigured);
+    private string syncDetail = "Вставь GitHub-токен, чтобы синхронизировать аптечку.";
+    private string? lastSuccessfulText;
     private bool isBusy;
 
     public MainViewModel(
         InventoryService inventoryService,
         PackageService packageService,
         ISyncService syncService,
+        ISyncStateInspector syncStateInspector,
         ISecureTokenStore tokenStore)
     {
         this.inventoryService = inventoryService;
         this.packageService = packageService;
         this.syncService = syncService;
+        this.syncStateInspector = syncStateInspector;
         this.tokenStore = tokenStore;
 
         owner = Preferences.Default.Get(OwnerPreference, "666Katrina666");
@@ -149,11 +156,41 @@ public sealed class MainViewModel : INotifyPropertyChanged
         ? "Токен сохранён в Secure Storage. Поле можно оставить пустым."
         : "Введи repository-scoped GitHub token с Contents: Read and write.";
 
-    public string Status
+    public string SyncHeadline
     {
-        get => status;
-        private set => SetField(ref status, value);
+        get => syncHeadline;
+        private set => SetField(ref syncHeadline, value);
     }
+
+    public string SyncDetail
+    {
+        get => syncDetail;
+        private set => SetField(ref syncDetail, value);
+    }
+
+    public string? LastSuccessfulText
+    {
+        get => lastSuccessfulText;
+        private set
+        {
+            if (SetField(ref lastSuccessfulText, value))
+            {
+                OnPropertyChanged(nameof(HasLastSuccessful));
+            }
+        }
+    }
+
+    public bool HasLastSuccessful => !string.IsNullOrEmpty(LastSuccessfulText);
+
+    public bool IsSynced => syncState == SyncUiState.Synced;
+
+    public bool IsLocalChanges => syncState == SyncUiState.LocalChanges;
+
+    public bool IsSyncing => syncState == SyncUiState.Syncing;
+
+    public bool IsConflict => syncState == SyncUiState.Conflict;
+
+    public bool IsError => syncState == SyncUiState.Error;
 
     public bool IsBusy
     {
@@ -177,17 +214,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
             {
                 HasSavedToken = await tokenStore.HasTokenAsync();
             }
-            catch (Exception exception)
+            catch (Exception)
             {
                 HasSavedToken = false;
-                Status = $"Не удалось проверить сохранённый токен: {exception.Message}";
+                ShowFailure(SyncFailureKind.LocalStorage);
+                return;
             }
 
             await RefreshItemsAsync();
+            if (!pinSessionStatus)
+            {
+                await RefreshSyncInspectionAsync();
+            }
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            Status = $"Не удалось загрузить каталог: {exception.Message}";
+            ShowFailure(SyncFailureKind.LocalStorage);
         }
     }
 
@@ -203,7 +245,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
 
             var rows = new List<CatalogItemRow>(catalog.Count);
-            var failedSummaries = 0;
             foreach (var item in catalog)
             {
                 ItemStockSummary? summary = null;
@@ -213,7 +254,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 }
                 catch
                 {
-                    failedSummaries++;
                 }
 
                 if (epoch != refreshEpoch)
@@ -225,36 +265,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
 
             Items = rows;
-            if (failedSummaries > 0)
-            {
-                Status = failedSummaries == 1
-                    ? "Не удалось загрузить наличие для одной позиции."
-                    : $"Не удалось загрузить наличие для {failedSummaries} позиций.";
-            }
-            else if (Status == "Локальные данные ещё не загружены." ||
-                     Status.StartsWith("Не удалось загрузить наличие", StringComparison.Ordinal))
-            {
-                Status = Items.Count == 0
-                    ? "Каталог пуст. Добавь позицию или синхронизируй данные."
-                    : $"Загружен каталог: {Items.Count}.";
-            }
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            if (epoch != refreshEpoch)
+            if (epoch != refreshEpoch || pinSessionStatus)
             {
                 return;
             }
 
-            Status = $"Не удалось загрузить каталог: {exception.Message}";
+            ShowFailure(SyncFailureKind.LocalStorage);
         }
     }
 
     public async Task CompleteConflictResolutionAsync(SyncResult result)
     {
-        Status = result.Message;
+        if (result.Outcome == SyncOutcome.Conflict)
+        {
+            ShowConflict();
+            return;
+        }
+
+        pinSessionStatus = false;
+        Show(SyncUiState.Synced, "Выбранные версии применены.");
         await RefreshItemsAsync();
+        await RefreshSyncInspectionAsync();
     }
+
+    public void ShowSyncFailure(SyncFailureKind kind) => ShowFailure(kind);
 
     private async Task SyncAsync()
     {
@@ -264,6 +301,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         IsBusy = true;
+        pinSessionStatus = false;
+        Show(SyncUiState.Syncing, "Отправляем и получаем изменения.");
         try
         {
             var token = TokenInput.Trim();
@@ -280,7 +319,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
             if (token.Length == 0)
             {
-                throw new InvalidOperationException("Сначала введи GitHub-токен.");
+                ShowFailure(SyncFailureKind.Authentication);
+                return;
             }
 
             SaveSyncPreferences();
@@ -292,9 +332,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 CancellationToken.None);
 
             await RefreshItemsAsync();
-            Status = result.Message;
             if (result.Outcome == SyncOutcome.Conflict)
             {
+                ShowConflict();
                 var resolvable = result.Conflicts
                     .Where(static conflict => !ConflictPresentation.IsManifest(conflict))
                     .ToArray();
@@ -304,16 +344,94 @@ public sealed class MainViewModel : INotifyPropertyChanged
                         this,
                         new ConflictResolutionRequest(target, DeviceInfo.Name, resolvable));
                 }
+
+                return;
             }
+
+            pinSessionStatus = false;
+            Show(SyncUiState.Synced, "Изменения синхронизированы.");
+            await RefreshSyncInspectionAsync();
         }
-        catch (Exception exception)
+        catch (SyncFailureException exception)
         {
-            Status = $"Синхронизация остановлена: {exception.Message}";
+            ShowFailure(exception.Kind);
+        }
+        catch (Exception)
+        {
+            ShowFailure(SyncFailureKind.Unknown);
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private async Task RefreshSyncInspectionAsync()
+    {
+        if (!HasSavedToken)
+        {
+            Show(SyncUiState.NotConfigured, "Вставь GitHub-токен, чтобы синхронизировать аптечку.");
+            return;
+        }
+
+        try
+        {
+            var inspection = await syncStateInspector.InspectAsync();
+            LastSuccessfulText = SyncStatusText.LastSuccessful(inspection.LastSuccessfulAt);
+            switch (inspection.Condition)
+            {
+                case SyncInspectionCondition.MatchesBase:
+                    Show(SyncUiState.Synced, "Локальные данные совпадают с последней успешной синхронизацией.");
+                    break;
+                case SyncInspectionCondition.LocalChanges:
+                    Show(SyncUiState.LocalChanges, "Изменения сохранены на устройстве и ещё не отправлены.");
+                    break;
+                default:
+                    if (Items.Count == 0)
+                    {
+                        Show(SyncUiState.NotConfigured, "Синхронизация ещё не выполнялась.");
+                        SyncHeadline = "Синхронизация ещё не выполнялась";
+                    }
+                    else
+                    {
+                        Show(SyncUiState.LocalChanges, "Локальные данные ещё не отправлялись.");
+                    }
+
+                    break;
+            }
+        }
+        catch (SyncFailureException exception)
+        {
+            ShowFailure(exception.Kind);
+        }
+        catch (Exception)
+        {
+            ShowFailure(SyncFailureKind.Unknown);
+        }
+    }
+
+    private void ShowConflict() =>
+        Show(SyncUiState.Conflict, "Выбери версию на этом устройстве или из GitHub.");
+
+    private void ShowFailure(SyncFailureKind kind)
+    {
+        pinSessionStatus = true;
+        Show(SyncUiState.Error, SyncStatusText.Detail(kind));
+    }
+
+    private void Show(SyncUiState state, string detail)
+    {
+        pinSessionStatus = state is SyncUiState.Conflict or SyncUiState.Error;
+        syncState = state;
+        SyncHeadline = state == SyncUiState.NotConfigured && detail == "Синхронизация ещё не выполнялась."
+            ? "Синхронизация ещё не выполнялась"
+            : SyncStatusText.Headline(state);
+        SyncDetail = detail;
+        OnPropertyChanged(nameof(IsSynced));
+        OnPropertyChanged(nameof(IsLocalChanges));
+        OnPropertyChanged(nameof(IsSyncing));
+        OnPropertyChanged(nameof(IsConflict));
+        OnPropertyChanged(nameof(IsError));
     }
 
     private static CatalogItemRow ToRow(InventoryItem item, ItemStockSummary? summary)

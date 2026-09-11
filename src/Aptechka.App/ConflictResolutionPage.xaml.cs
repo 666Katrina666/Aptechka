@@ -12,11 +12,14 @@ public partial class ConflictResolutionPage : ContentPage
         InitializeComponent();
         BindingContext = this.viewModel = viewModel;
         viewModel.Completed += OnCompleted;
+        viewModel.Failed += OnFailed;
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         NavigationPage.SetHasBackButton(this, true);
     }
 
     public event EventHandler<SyncResult>? Resolved;
+
+    public event EventHandler<SyncFailureKind>? Failed;
 
     public bool IsResolveInFlight => viewModel.IsBusy;
 
@@ -59,4 +62,7 @@ public partial class ConflictResolutionPage : ContentPage
 
     private void OnCompleted(object? sender, SyncResult result) =>
         Resolved?.Invoke(this, result);
+
+    private void OnFailed(object? sender, SyncFailureKind kind) =>
+        Failed?.Invoke(this, kind);
 }

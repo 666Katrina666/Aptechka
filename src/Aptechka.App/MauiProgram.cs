@@ -47,8 +47,10 @@ public static class MauiProgram
             Timeout = TimeSpan.FromSeconds(30),
         });
         builder.Services.AddSingleton<IGitHubDataClient, GitHubDataClient>();
-        builder.Services.AddSingleton(new SyncStateStore(
-            Path.Combine(FileSystem.AppDataDirectory, "sync", "state.json")));
+        builder.Services.AddSingleton(services => new SyncStateStore(
+            Path.Combine(FileSystem.AppDataDirectory, "sync", "state.json"),
+            services.GetRequiredService<IClock>()));
+        builder.Services.AddSingleton<ISyncStateInspector, SyncStateInspector>();
         builder.Services.AddSingleton<ISyncService, GitHubSyncService>();
         builder.Services.AddSingleton<ISecureTokenStore, MauiSecureTokenStore>();
         builder.Services.AddSingleton<MainViewModel>();

@@ -81,6 +81,21 @@
         <VerticalStackLayout Grid.Row="2" Spacing="8">
             <BoxView HeightRequest="1" Color="{StaticResource Gray300}" />
             <Label FontAttributes="Bold" Text="GitHub-синхронизация" />
+            <Label FontAttributes="Bold" LineBreakMode="WordWrap" Text="{Binding SyncHeadline}" />
+            <Label
+                LineBreakMode="WordWrap"
+                Text="{Binding SyncDetail}" />
+            <Label
+                FontSize="12"
+                IsVisible="{Binding HasLastSuccessful}"
+                LineBreakMode="WordWrap"
+                Text="{Binding LastSuccessfulText}"
+                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+            <BoxView HeightRequest="3" IsVisible="{Binding IsSynced}" Color="{StaticResource Primary}" />
+            <BoxView HeightRequest="3" IsVisible="{Binding IsLocalChanges}" Color="{StaticResource Gray400}" />
+            <BoxView HeightRequest="3" IsVisible="{Binding IsSyncing}" Color="{StaticResource Primary}" />
+            <BoxView HeightRequest="3" IsVisible="{Binding IsConflict}" Color="#8A5A00" />
+            <BoxView HeightRequest="3" IsVisible="{Binding IsError}" Color="#B3261E" />
 
             <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
                 <VerticalStackLayout Grid.Column="0" Spacing="4">
@@ -109,10 +124,6 @@
 
             <Button Command="{Binding SyncCommand}" Text="Синхронизировать" />
             <ActivityIndicator IsRunning="{Binding IsBusy}" IsVisible="{Binding IsBusy}" />
-            <Label
-                LineBreakMode="WordWrap"
-                Text="{Binding Status}"
-                TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
         </VerticalStackLayout>
     </Grid>
 </ContentPage>
