@@ -9,16 +9,30 @@ public sealed class SyncStateStore(string statePath, IClock clock)
 {
     public async Task<SyncState?> LoadAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(statePath))
         {
             return null;
         }
 
-        await using var stream = File.OpenRead(statePath);
-        return await JsonSerializer.DeserializeAsync<SyncState>(
-            stream,
-            AptechkaJson.Options,
-            cancellationToken);
+        SyncState? state;
+        await using (var stream = File.OpenRead(statePath))
+        {
+            state = await JsonSerializer.DeserializeAsync<SyncState>(
+                stream,
+                AptechkaJson.Options,
+                cancellationToken);
+        }
+
+        if (state is null ||
+            string.IsNullOrWhiteSpace(state.DatasetId) ||
+            string.IsNullOrWhiteSpace(state.LastCommitSha) ||
+            state.BaseFiles is null)
+        {
+            throw new InvalidDataException("Состояние синхронизации повреждено.");
+        }
+
+        return state;
     }
 
     public async Task SaveAsync(

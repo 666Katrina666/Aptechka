@@ -208,28 +208,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public async Task LoadAsync()
     {
+        var tokenStoreFailed = false;
         try
         {
-            try
-            {
-                HasSavedToken = await tokenStore.HasTokenAsync();
-            }
-            catch (Exception)
-            {
-                HasSavedToken = false;
-                ShowFailure(SyncFailureKind.LocalStorage);
-                return;
-            }
-
-            await RefreshItemsAsync();
-            if (!pinSessionStatus)
-            {
-                await RefreshSyncInspectionAsync();
-            }
+            HasSavedToken = await tokenStore.HasTokenAsync();
         }
         catch (Exception)
         {
+            HasSavedToken = false;
             ShowFailure(SyncFailureKind.LocalStorage);
+            tokenStoreFailed = true;
+        }
+
+        await RefreshItemsAsync();
+        if (tokenStoreFailed || pinSessionStatus)
+        {
+            return;
+        }
+
+        try
+        {
+            await RefreshSyncInspectionAsync();
+        }
+        catch (Exception)
+        {
+            ShowFailure(SyncFailureKind.Unknown);
         }
     }
 

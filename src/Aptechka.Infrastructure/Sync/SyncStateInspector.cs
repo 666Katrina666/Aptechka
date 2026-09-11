@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Aptechka.Application.Sync;
 
 namespace Aptechka.Infrastructure.Sync;
@@ -8,39 +9,56 @@ public sealed class SyncStateInspector(
 {
     public async Task<SyncInspection> InspectAsync(CancellationToken cancellationToken = default)
     {
-        var state = await stateStore.LoadAsync(cancellationToken);
+        SyncState? state;
+        try
+        {
+            state = await stateStore.LoadAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            throw Classify(exception, cancellationToken);
+        }
+
         if (state is null)
         {
             return new SyncInspection(SyncInspectionCondition.NoSuccessfulSync, null, null);
         }
 
-        DataSnapshot local;
-        DataSnapshot @base;
         try
         {
-            local = await snapshotStore.ReadAsync(cancellationToken);
-            @base = state.GetBaseSnapshot();
+            var local = await snapshotStore.ReadAsync(cancellationToken);
+            var @base = state.GetBaseSnapshot();
+            return new SyncInspection(
+                local.HasSameFiles(@base)
+                    ? SyncInspectionCondition.MatchesBase
+                    : SyncInspectionCondition.LocalChanges,
+                state.LastSuccessfulAt,
+                state.LastSuccessfulOutcome);
         }
-        catch (FormatException exception)
+        catch (Exception exception)
         {
-            throw new SyncFailureException(
-                SyncFailureKind.InvalidData,
-                "Данные имеют повреждённый или несовместимый формат.",
-                exception);
+            throw Classify(exception, cancellationToken);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+    }
+
+    private static Exception Classify(Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
-            throw new SyncFailureException(
-                SyncFailureKind.LocalStorage,
-                "Не удалось прочитать или сохранить локальные данные.",
-                exception);
+            return exception;
         }
 
-        return new SyncInspection(
-            local.HasSameFiles(@base)
-                ? SyncInspectionCondition.MatchesBase
-                : SyncInspectionCondition.LocalChanges,
-            state.LastSuccessfulAt,
-            state.LastSuccessfulOutcome);
+        return exception switch
+        {
+            JsonException or InvalidDataException or FormatException => new SyncFailureException(
+                SyncFailureKind.InvalidData,
+                "Данные имеют повреждённый или несовместимый формат.",
+                exception),
+            IOException or UnauthorizedAccessException => new SyncFailureException(
+                SyncFailureKind.LocalStorage,
+                "Не удалось прочитать или сохранить локальные данные.",
+                exception),
+            _ => exception,
+        };
     }
 }

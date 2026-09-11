@@ -246,6 +246,86 @@ public sealed class SyncFailureAndInspectionTests
         AssertSafe(exception);
     }
 
+    [Theory]
+    [InlineData("{")]
+    [InlineData("null")]
+    [InlineData("""{"lastCommitSha":"sha","baseFiles":{}}""")]
+    [InlineData("""{"datasetId":"01ARZ3NDEKTSV4RRFFQ69G5FAZ","lastCommitSha":"sha","baseFiles":null}""")]
+    [InlineData("""{"datasetId":"01ARZ3NDEKTSV4RRFFQ69G5FAZ","lastCommitSha":"sha"}""")]
+    [InlineData("""{"datasetId":"","lastCommitSha":"sha","baseFiles":{}}""")]
+    [InlineData("""{"datasetId":"01ARZ3NDEKTSV4RRFFQ69G5FAZ","lastCommitSha":"","baseFiles":{}}""")]
+    public async Task Inspector_ClassifiesCorruptStateAsInvalidData(string json)
+    {
+        var snapshot = Snapshot();
+        await using var harness = await Harness.CreateAsync(snapshot, snapshot, Remote(snapshot));
+        await File.WriteAllTextAsync(harnessState(harness), json);
+
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Inspector.InspectAsync());
+
+        Assert.Equal(SyncFailureKind.InvalidData, exception.Kind);
+        AssertSafe(exception);
+        Assert.DoesNotContain(harness.StatePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Inspector_ClassifiesUnreadableStateAsLocalStorage()
+    {
+        var snapshot = Snapshot();
+        await using var harness = await Harness.CreateAsync(snapshot, snapshot, Remote(snapshot));
+        await using var locked = new FileStream(harnessState(harness), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Inspector.InspectAsync());
+
+        Assert.Equal(SyncFailureKind.LocalStorage, exception.Kind);
+        AssertSafe(exception);
+        Assert.DoesNotContain(harness.StatePath, exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Inspector_PropagatesCallerCancellation()
+    {
+        var snapshot = Snapshot();
+        await using var harness = await Harness.CreateAsync(snapshot, snapshot, Remote(snapshot));
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => harness.Inspector.InspectAsync(cts.Token));
+    }
+
+    [Fact]
+    public async Task Sync_LinkedCallerCancellationIsNotTimeout()
+    {
+        var snapshot = Snapshot();
+        var handler = new HoldingHandler();
+        await using var session = await LinkedClientSession.CreateAsync(snapshot, handler);
+        using var cts = new CancellationTokenSource();
+
+        var sync = session.Service.SyncAsync(new SyncTarget("owner", "repo", "main"), Token, "device", cts.Token);
+        await handler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sync);
+        Assert.IsNotType<SyncFailureException>(exception);
+        Assert.NotEqual(cts.Token, handler.ObservedToken);
+        Assert.True(handler.ObservedToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Sync_LinkedTimeoutWithoutCallerCancellationIsTimeout()
+    {
+        var snapshot = Snapshot();
+        var handler = new HoldingHandler { CancelLinkedTokenImmediately = true };
+        await using var session = await LinkedClientSession.CreateAsync(snapshot, handler);
+
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() =>
+            session.Service.SyncAsync(new SyncTarget("owner", "repo", "main"), Token, "device"));
+
+        Assert.Equal(SyncFailureKind.Timeout, exception.Kind);
+        AssertSafe(exception);
+        Assert.True(handler.ObservedToken.CanBeCanceled);
+        Assert.False(handler.ObservedToken.IsCancellationRequested);
+    }
+
     private static void AssertSafe(SyncFailureException exception)
     {
         Assert.DoesNotContain(Token, exception.Message, StringComparison.Ordinal);
@@ -418,5 +498,77 @@ public sealed class SyncFailureAndInspectionTests
     private sealed class SequenceIdGenerator : IIdGenerator
     {
         public string Create(DateTimeOffset timestamp) => DatasetId;
+    }
+
+    private sealed class LinkedClientSession : IAsyncDisposable
+    {
+        private readonly string root;
+        private readonly HttpClient http;
+
+        private LinkedClientSession(string root, HttpClient http, GitHubSyncService service)
+        {
+            this.root = root;
+            this.http = http;
+            Service = service;
+        }
+
+        public GitHubSyncService Service { get; }
+
+        public static async Task<LinkedClientSession> CreateAsync(DataSnapshot snapshot, HoldingHandler handler)
+        {
+            var root = NewRoot();
+            var clock = new StubClock(Now);
+            var repository = new FileInventoryRepository(Path.Combine(root, "data"), clock, new SequenceIdGenerator());
+            if (!snapshot.IsEmpty)
+            {
+                await repository.ReplaceAsync(snapshot);
+            }
+
+            var http = new HttpClient(handler, disposeHandler: false)
+            {
+                BaseAddress = new Uri("https://api.github.com/"),
+            };
+            var service = new GitHubSyncService(
+                new FaultingSnapshotStore(repository),
+                new SyncStateStore(Path.Combine(root, "sync", "state.json"), clock),
+                new GitHubDataClient(http),
+                clock);
+            return new LinkedClientSession(root, http, service);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            http.Dispose();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class HoldingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationToken ObservedToken { get; private set; }
+
+        public bool CancelLinkedTokenImmediately { get; init; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            ObservedToken = cancellationToken;
+            Entered.TrySetResult();
+            if (CancelLinkedTokenImmediately)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
 }

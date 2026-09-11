@@ -190,7 +190,7 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
         CancellationToken cancellationToken,
         bool headRaceOnConflict = false)
     {
-using var request = new HttpRequestMessage(method, path);
+        using var request = new HttpRequestMessage(method, path);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromMinutes(2));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);

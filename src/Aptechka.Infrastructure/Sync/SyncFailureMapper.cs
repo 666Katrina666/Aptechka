@@ -12,7 +12,7 @@ internal static class SyncFailureMapper
         exception switch
         {
             SyncFailureException => exception,
-            OperationCanceledException canceled when IsUserCancellation(canceled, cancellationToken) => exception,
+            OperationCanceledException when cancellationToken.IsCancellationRequested => exception,
             ArgumentException argument when IsConfiguration(argument) => Failure(
                 SyncFailureKind.InvalidConfiguration,
                 "Проверь владельца, репозиторий и ветку.",
@@ -64,8 +64,4 @@ internal static class SyncFailureMapper
             or "Repository" or nameof(SyncTarget.Repository)
             or "Branch" or nameof(SyncTarget.Branch)
             or nameof(SyncTarget);
-
-    private static bool IsUserCancellation(OperationCanceledException exception, CancellationToken cancellationToken) =>
-        cancellationToken.IsCancellationRequested &&
-        (exception.CancellationToken == cancellationToken || exception.CancellationToken == CancellationToken.None);
 }
