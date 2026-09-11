@@ -20,10 +20,6 @@ public sealed class GitHubSyncService(
         "Локальная аптечка и GitHub имеют разные datasetId. Автоматическая замена запрещена.";
     private const string ConcurrentChangeMessage =
         "Локальные и удалённые данные изменились одновременно. Синхронизация остановлена без потери данных.";
-    private const string LocalBusyMessage =
-        "Локальные данные изменялись во время синхронизации. Повтори попытку.";
-    private const string RepeatedHeadRaceMessage =
-        "Удалённая ветка изменялась повторно. Синхронизация остановлена без потери локальных данных.";
 
     private readonly SnapshotMergeEngine mergeEngine = new();
     private readonly SemaphoreSlim syncGate = new(1, 1);
@@ -56,7 +52,20 @@ public sealed class GitHubSyncService(
         await syncGate.WaitAsync(cancellationToken);
         try
         {
-            return await SyncCoreAsync(target, accessToken, deviceName, resolutions, cancellationToken);
+            try
+            {
+                return await SyncCoreAsync(target, accessToken, deviceName, resolutions, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                var mapped = SyncFailureMapper.Map(exception, cancellationToken);
+                if (ReferenceEquals(mapped, exception))
+                {
+                    throw;
+                }
+
+                throw mapped;
+            }
         }
         finally
         {
@@ -74,7 +83,9 @@ public sealed class GitHubSyncService(
         target.EnsureValid();
         if (string.IsNullOrWhiteSpace(accessToken))
         {
-            throw new ArgumentException("GitHub-токен не задан.", nameof(accessToken));
+            throw new SyncFailureException(
+                SyncFailureKind.Authentication,
+                "GitHub-токен не задан.");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -135,6 +146,7 @@ public sealed class GitHubSyncService(
                 initializedManifest.DatasetId,
                 remote.CommitSha,
                 local,
+                SyncOutcome.Initialized,
                 cancellationToken);
             return new SyncResult(
                 SyncOutcome.Initialized,
@@ -155,6 +167,7 @@ public sealed class GitHubSyncService(
                 initializedManifest.DatasetId,
                 commitSha,
                 local,
+                SyncOutcome.Initialized,
                 cancellationToken);
             return new SyncResult(
                 SyncOutcome.Initialized,
@@ -240,10 +253,14 @@ public sealed class GitHubSyncService(
                 continue;
             }
 
-            throw new InvalidOperationException(LocalBusyMessage);
+            throw new SyncFailureException(
+                SyncFailureKind.LocalChangedRepeatedly,
+                "Локальные данные изменялись во время синхронизации. Повтори попытку.");
         }
 
-        throw new GitHubHeadChangedException(RepeatedHeadRaceMessage);
+        throw new SyncFailureException(
+            SyncFailureKind.RemoteChangedRepeatedly,
+            "Удалённая ветка изменялась повторно. Синхронизация остановлена без потери локальных данных.");
     }
 
     private async Task<AttemptOutcome> TryOnceAsync(
@@ -264,14 +281,20 @@ public sealed class GitHubSyncService(
             }
 
             var pulledManifest = ReadManifest(remote.Data);
+            var pulledOutcome = local.HasSameFiles(remote.Data)
+                ? SyncOutcome.UpToDate
+                : SyncOutcome.Pulled;
             await stateStore.SaveAsync(
                 pulledManifest.DatasetId,
                 remote.CommitSha,
                 remote.Data,
+                pulledOutcome,
                 cancellationToken);
             return AttemptOutcome.Completed(new SyncResult(
-                SyncOutcome.Pulled,
-                "Данные загружены с GitHub на это устройство.",
+                pulledOutcome,
+                local.HasSameFiles(remote.Data)
+                    ? "Локальные данные и GitHub уже совпадают."
+                    : "Данные загружены с GitHub на это устройство.",
                 remote.CommitSha));
         }
 
@@ -324,13 +347,15 @@ public sealed class GitHubSyncService(
                 return AttemptOutcome.CasMiss();
             }
 
+            var pullOutcome = local.HasSameFiles(remote.Data) ? SyncOutcome.UpToDate : SyncOutcome.Pulled;
             await stateStore.SaveAsync(
                 localManifest.DatasetId,
                 remote.CommitSha,
                 merged,
+                pullOutcome,
                 cancellationToken);
             return AttemptOutcome.Completed(new SyncResult(
-                local.HasSameFiles(remote.Data) ? SyncOutcome.UpToDate : SyncOutcome.Pulled,
+                pullOutcome,
                 local.HasSameFiles(remote.Data)
                     ? "Локальные данные и GitHub уже совпадают."
                     : "Изменения с GitHub загружены на устройство.",
@@ -356,6 +381,7 @@ public sealed class GitHubSyncService(
                 localManifest.DatasetId,
                 commitSha,
                 merged,
+                SyncOutcome.Pushed,
                 cancellationToken);
             return AttemptOutcome.Completed(new SyncResult(
                 SyncOutcome.Pushed,
@@ -395,6 +421,7 @@ public sealed class GitHubSyncService(
                         localManifest.DatasetId,
                         commitSha,
                         local,
+                        SyncOutcome.Pushed,
                         cancellationToken);
                     return AttemptOutcome.Completed(new SyncResult(
                         SyncOutcome.Pushed,
@@ -416,6 +443,7 @@ public sealed class GitHubSyncService(
                     remoteManifest.DatasetId,
                     remote.CommitSha,
                     remote.Data,
+                    SyncOutcome.Pulled,
                     cancellationToken);
                 return AttemptOutcome.Completed(new SyncResult(
                     SyncOutcome.Pulled,
@@ -427,6 +455,7 @@ public sealed class GitHubSyncService(
                     localManifest.DatasetId,
                     remote.CommitSha,
                     remote.Data,
+                    SyncOutcome.UpToDate,
                     cancellationToken);
                 return AttemptOutcome.Completed(new SyncResult(
                     SyncOutcome.UpToDate,

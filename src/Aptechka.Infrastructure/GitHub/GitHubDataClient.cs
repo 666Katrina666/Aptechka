@@ -190,7 +190,9 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
         CancellationToken cancellationToken,
         bool headRaceOnConflict = false)
     {
-        using var request = new HttpRequestMessage(method, path);
+using var request = new HttpRequestMessage(method, path);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(2));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.Add("X-GitHub-Api-Version", ApiVersion);
@@ -200,7 +202,7 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
             request.Content = JsonContent.Create(body, options: AptechkaJson.Options);
         }
 
-        var response = await httpClient.SendAsync(request, cancellationToken);
+        var response = await httpClient.SendAsync(request, timeout.Token);
         if (response.IsSuccessStatusCode)
         {
             return response;
@@ -219,18 +221,10 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
             throw new GitHubHeadChangedException();
         }
 
-        var message = await ReadErrorMessageAsync(response, cancellationToken);
+        var rateLimited = IsRateLimited(response);
+        var retryAfter = ReadRetryAfter(response);
         response.Dispose();
-        if (statusCode == 404)
-        {
-            throw new GitHubApiException(
-                404,
-                "Репозиторий не найден или у токена нет доступа. " +
-                "Проверь владельца/репозиторий/ветку и что у токена Contents = Read and write на aptechka-data. " +
-                "Чтобы заменить токен, вставь новый в поле и нажми «Синхронизировать».");
-        }
-
-        throw new GitHubApiException(statusCode, message);
+        throw new GitHubApiException(statusCode, "GitHub API", rateLimited, retryAfter);
     }
 
     private static async Task<T> DeserializeAsync<T>(
@@ -244,29 +238,46 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
                 stream,
                 AptechkaJson.Options,
                 cancellationToken)
-                ?? throw new GitHubApiException((int)response.StatusCode, "GitHub вернул пустой ответ.");
+                ?? throw new GitHubApiException((int)response.StatusCode, "GitHub API");
         }
     }
 
-    private static async Task<string> ReadErrorMessageAsync(
-        HttpResponseMessage response,
-        CancellationToken cancellationToken)
+    private static bool IsRateLimited(HttpResponseMessage response)
     {
-        try
+        if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var error = await JsonSerializer.DeserializeAsync<GitHubErrorResponse>(
-                stream,
-                AptechkaJson.Options,
-                cancellationToken);
-            return string.IsNullOrWhiteSpace(error?.Message)
-                ? response.ReasonPhrase ?? "Неизвестная ошибка."
-                : error.Message;
+            return true;
         }
-        catch (JsonException)
+
+        if (response.StatusCode != HttpStatusCode.Forbidden)
         {
-            return response.ReasonPhrase ?? "Неизвестная ошибка.";
+            return false;
         }
+
+        if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) &&
+            remaining.Any(static value => value.Trim() == "0"))
+        {
+            return true;
+        }
+
+        return response.Headers.RetryAfter is not null;
+    }
+
+    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        if (retryAfter?.Delta is { } delta)
+        {
+            return delta;
+        }
+
+        if (retryAfter?.Date is { } date)
+        {
+            var delay = date - DateTimeOffset.UtcNow;
+            return delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+        }
+
+        return null;
     }
 
     private static string GetRepositoryPrefix(SyncTarget target) =>
@@ -294,5 +305,4 @@ public sealed class GitHubDataClient(HttpClient httpClient) : IGitHubDataClient
     private sealed record GitTreeEntry(string Path, string Type, string Sha);
     private sealed record GitBlobResponse(string Content, string Encoding);
     private sealed record GitObjectResponse(string Sha);
-    private sealed record GitHubErrorResponse(string Message);
 }

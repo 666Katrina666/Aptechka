@@ -243,9 +243,9 @@ public sealed class GitHubSyncServiceTests
         harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-2", @base));
         harness.GitHub.RemoteAfterFailure.Enqueue(Remote("sha-3", @base));
 
-        var exception = await Assert.ThrowsAsync<GitHubHeadChangedException>(() => harness.Sync());
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Sync());
 
-        Assert.Contains("повторно", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(SyncFailureKind.RemoteChangedRepeatedly, exception.Kind);
         Assert.DoesNotContain(Token, exception.Message);
         Assert.DoesNotContain("Нурофен", exception.Message);
         Assert.Equal(3, harness.GitHub.GetSnapshotCalls);
@@ -265,9 +265,9 @@ public sealed class GitHubSyncServiceTests
         await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
         harness.GitHub.CommitErrors.Enqueue(new GitHubApiException(401, "Unauthorized"));
 
-        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => harness.Sync());
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Sync());
 
-        Assert.Equal(401, exception.StatusCode);
+        Assert.Equal(SyncFailureKind.Authentication, exception.Kind);
         Assert.DoesNotContain(Token, exception.Message);
         Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
         Assert.Equal(1, harness.GitHub.CommitCalls);
@@ -356,10 +356,10 @@ public sealed class GitHubSyncServiceTests
         await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
         harness.GitHub.CommitErrors.Enqueue(new GitHubApiException(500, "GitHub unavailable"));
 
-        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => harness.Sync());
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Sync());
         var expected = Merge(@base, local, @base);
 
-        Assert.Equal(500, exception.StatusCode);
+        Assert.Equal(SyncFailureKind.RemoteUnavailable, exception.Kind);
         Assert.Equal(1, harness.GitHub.GetSnapshotCalls);
         Assert.Equal(1, harness.GitHub.CommitCalls);
         Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
@@ -640,6 +640,26 @@ public sealed class GitHubSyncServiceTests
         Assert.Equal("form", Assert.Single(result.Conflicts).Field);
         Assert.Equal(0, harness.GitHub.CommitCalls);
         Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(local));
+        await AssertStateAsync(harness, "sha-0", @base);
+    }
+
+    [Fact]
+    public async Task Sync_ThreeCasMissesBecomeTypedFailure()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var localItem = item.Update(T1, item.Name, item.Aliases, item.Category, item.ActiveIngredients, "капсулы", item.Strength, item.Description, item.KeepInStock);
+        var remoteItem = Rename(item, "Ибуфен", T2);
+        var @base = Snap(File(Manifest()), File(item));
+        var local = Snap(File(Manifest()), File(localItem));
+        var remote = Snap(File(Manifest()), File(remoteItem));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", remote));
+        harness.Store.AlwaysMissReplace = true;
+
+        var exception = await Assert.ThrowsAsync<SyncFailureException>(() => harness.Sync());
+
+        Assert.Equal(SyncFailureKind.LocalChangedRepeatedly, exception.Kind);
+        Assert.Equal(3, harness.Store.TryReplaceCalls);
+        Assert.DoesNotContain("Нурофен", exception.Message);
         await AssertStateAsync(harness, "sha-0", @base);
     }
 
@@ -951,10 +971,10 @@ public sealed class GitHubSyncServiceTests
             }
 
             var store = new InterceptingSnapshotStore(repository);
-            var stateStore = new SyncStateStore(Path.Combine(rootPath, "sync", "state.json"));
+            var stateStore = new SyncStateStore(Path.Combine(rootPath, "sync", "state.json"), clock);
             if (baseSnapshot is not null)
             {
-                await stateStore.SaveAsync(DatasetId, remote.CommitSha, baseSnapshot);
+                await stateStore.SaveAsync(DatasetId, remote.CommitSha, baseSnapshot, SyncOutcome.Pushed);
             }
 
             var gitHub = new FakeGitHubDataClient { Remote = remote };
@@ -989,11 +1009,13 @@ public sealed class GitHubSyncServiceTests
     private sealed class InterceptingSnapshotStore(IDataSnapshotStore inner) : IDataSnapshotStore
     {
         public int TryReplaceCalls { get; private set; }
+        public IOException? ReadError { get; set; }
+        public bool AlwaysMissReplace { get; set; }
 
         public Func<int, DataSnapshot, DataSnapshot, Task>? BeforeTryReplace { get; set; }
 
         public Task<DataSnapshot> ReadAsync(CancellationToken cancellationToken = default) =>
-            inner.ReadAsync(cancellationToken);
+            ReadError is not null ? throw ReadError : inner.ReadAsync(cancellationToken);
 
         public Task EnsureInitializedAsync(CancellationToken cancellationToken = default) =>
             inner.EnsureInitializedAsync(cancellationToken);
@@ -1012,7 +1034,7 @@ public sealed class GitHubSyncServiceTests
                 await BeforeTryReplace(call, expected, replacement);
             }
 
-            return await inner.TryReplaceAsync(expected, replacement, cancellationToken);
+            return AlwaysMissReplace ? false : await inner.TryReplaceAsync(expected, replacement, cancellationToken);
         }
     }
 

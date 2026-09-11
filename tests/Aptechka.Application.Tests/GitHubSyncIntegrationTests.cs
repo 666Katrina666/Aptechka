@@ -139,7 +139,7 @@ public sealed class GitHubSyncIntegrationTests
             idGenerator);
         var syncService = new GitHubSyncService(
             repository,
-            new SyncStateStore(Path.Combine(root, "sync", "state.json")),
+            new SyncStateStore(Path.Combine(root, "sync", "state.json"), clock),
             new GitHubDataClient(new HttpClient
             {
                 BaseAddress = new Uri("https://api.github.com/"),

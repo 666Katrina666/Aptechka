@@ -1,10 +1,11 @@
 using System.Text.Json;
+using Aptechka.Application.Inventory;
 using Aptechka.Application.Sync;
 using Aptechka.Infrastructure.Storage;
 
 namespace Aptechka.Infrastructure.Sync;
 
-public sealed class SyncStateStore(string statePath)
+public sealed class SyncStateStore(string statePath, IClock clock)
 {
     public async Task<SyncState?> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -24,6 +25,7 @@ public sealed class SyncStateStore(string statePath)
         string datasetId,
         string commitSha,
         DataSnapshot baseSnapshot,
+        SyncOutcome outcome,
         CancellationToken cancellationToken = default)
     {
         var state = new SyncState(
@@ -32,7 +34,9 @@ public sealed class SyncStateStore(string statePath)
             baseSnapshot.Files.ToDictionary(
                 static pair => pair.Key,
                 static pair => Convert.ToBase64String(pair.Value),
-                StringComparer.Ordinal));
+                StringComparer.Ordinal),
+            clock.UtcNow,
+            outcome);
 
         var directory = Path.GetDirectoryName(statePath)
             ?? throw new InvalidOperationException("У sync state отсутствует родительский каталог.");
@@ -72,7 +76,9 @@ public sealed class SyncStateStore(string statePath)
 public sealed record SyncState(
     string DatasetId,
     string LastCommitSha,
-    IReadOnlyDictionary<string, string> BaseFiles)
+    IReadOnlyDictionary<string, string> BaseFiles,
+    DateTimeOffset? LastSuccessfulAt = null,
+    SyncOutcome? LastSuccessfulOutcome = null)
 {
     public DataSnapshot GetBaseSnapshot() => new(
         BaseFiles.ToDictionary(
