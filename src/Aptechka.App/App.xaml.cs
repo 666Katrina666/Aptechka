@@ -1,3 +1,5 @@
+using Aptechka.App.Services;
+
 namespace Aptechka.App;
 
 public partial class App : Microsoft.Maui.Controls.Application
@@ -10,6 +12,10 @@ public partial class App : Microsoft.Maui.Controls.Application
         this.services = services;
     }
 
-    protected override Window CreateWindow(IActivationState? activationState) =>
-        new(new NavigationPage(services.GetRequiredService<MainPage>()));
+    protected override Window CreateWindow(IActivationState? activationState)
+    {
+        var window = new Window(new NavigationPage(services.GetRequiredService<MainPage>()));
+        services.GetRequiredService<AutoSyncCoordinator>().Attach(window);
+        return window;
+    }
 }

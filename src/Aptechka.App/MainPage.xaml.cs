@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using Aptechka.App.Services;
 using Aptechka.App.ViewModels;
 using Aptechka.Application.Sync;
 
@@ -7,29 +9,58 @@ public partial class MainPage : ContentPage
 {
     private readonly MainViewModel viewModel;
     private readonly IServiceProvider services;
+    private readonly AutoSyncCoordinator coordinator;
     private readonly List<PendingConflictResolution> pendingConflicts = [];
+    private ConflictResolutionRequest? deferredConflict;
 
-    public MainPage(MainViewModel viewModel, IServiceProvider services)
+    public MainPage(MainViewModel viewModel, IServiceProvider services, AutoSyncCoordinator coordinator)
     {
         InitializeComponent();
         BindingContext = this.viewModel = viewModel;
         this.services = services;
+        this.coordinator = coordinator;
         viewModel.ConflictResolutionRequested += OnConflictResolutionRequested;
+        viewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
     protected override async void OnAppearing()
     {
         base.OnAppearing();
         await viewModel.LoadAsync();
+        if (deferredConflict is { } request && IsTop())
+        {
+            await PresentConflictAsync(request);
+        }
+
+        coordinator.NotifyMainPageSafe(IsTop());
+        coordinator.NotifyInitialCatalog();
     }
 
-    private async void OnAddClicked(object? sender, EventArgs e) =>
+    protected override void OnDisappearing()
+    {
+        coordinator.NotifyMainPageSafe(false);
+        base.OnDisappearing();
+    }
+
+    private async void OnAddClicked(object? sender, EventArgs e)
+    {
+        if (viewModel.IsBusy)
+        {
+            return;
+        }
+
         await OpenEditorAsync(null);
+    }
 
     private async void OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (e.CurrentSelection.FirstOrDefault() is not CatalogItemRow row)
+        if (viewModel.IsBusy || e.CurrentSelection.FirstOrDefault() is not CatalogItemRow row)
         {
+            if (sender is CollectionView busyList)
+            {
+                busyList.SelectedItem = null;
+            }
+
             return;
         }
 
@@ -41,34 +72,64 @@ public partial class MainPage : ContentPage
         await OpenEditorAsync(row.Id);
     }
 
-    private async void OnConflictResolutionRequested(object? sender, ConflictResolutionRequest request)
-    {
-        var page = services.GetRequiredService<ConflictResolutionPage>();
-        await page.InitializeAsync(request);
+    private void OnConflictResolutionRequested(object? sender, ConflictResolutionRequest request) =>
+        _ = PresentConflictAsync(request);
 
-        var pending = new PendingConflictResolution(page);
-        EventHandler<SyncResult>? resolved = null;
-        EventHandler? unloaded = null;
-        resolved = async (_, result) =>
-            await FinishConflictResolutionAsync(pending, resolved, unloaded, result);
-        unloaded = (_, _) =>
+    private bool presentingConflict;
+
+    private async Task PresentConflictAsync(ConflictResolutionRequest request)
+    {
+        if (presentingConflict || pendingConflicts.Count > 0)
         {
-            if (page.IsResolveInFlight)
+            return;
+        }
+
+        if (!IsTop())
+        {
+            deferredConflict = request;
+            return;
+        }
+
+        presentingConflict = true;
+        deferredConflict = null;
+        try
+        {
+            var page = services.GetRequiredService<ConflictResolutionPage>();
+            await page.InitializeAsync(request);
+            if (!IsTop() || pendingConflicts.Count > 0)
             {
+                deferredConflict = request;
                 return;
             }
 
-            page.Unloaded -= unloaded;
-            page.Resolved -= resolved;
-            page.Failed -= OnConflictResolutionFailed;
-            pendingConflicts.Remove(pending);
-        };
+            var pending = new PendingConflictResolution(page);
+            EventHandler<SyncResult>? resolved = null;
+            EventHandler? unloaded = null;
+            resolved = async (_, result) =>
+                await FinishConflictResolutionAsync(pending, resolved, unloaded, result);
+            unloaded = (_, _) =>
+            {
+                if (page.IsResolveInFlight)
+                {
+                    return;
+                }
 
-        pendingConflicts.Add(pending);
-        page.Resolved += resolved;
-        page.Unloaded += unloaded;
-        page.Failed += OnConflictResolutionFailed;
-        await Navigation.PushAsync(page);
+                page.Unloaded -= unloaded;
+                page.Resolved -= resolved;
+                page.Failed -= OnConflictResolutionFailed;
+                pendingConflicts.Remove(pending);
+            };
+
+            pendingConflicts.Add(pending);
+            page.Resolved += resolved;
+            page.Unloaded += unloaded;
+            page.Failed += OnConflictResolutionFailed;
+            await Navigation.PushAsync(page);
+        }
+        finally
+        {
+            presentingConflict = false;
+        }
     }
 
     private async Task FinishConflictResolutionAsync(
@@ -115,8 +176,23 @@ public partial class MainPage : ContentPage
 
     private async Task OpenEditorAsync(string? itemId)
     {
+        if (viewModel.IsBusy)
+        {
+            return;
+        }
+
         var page = services.GetRequiredService<ItemEditorPage>();
         await page.InitializeAsync(itemId);
         await Navigation.PushAsync(page);
+    }
+
+    private bool IsTop() => ReferenceEquals(Navigation?.NavigationStack.LastOrDefault(), this);
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if ((e.PropertyName is nameof(MainViewModel.IsBusy) or null) && ToolbarItems.Count > 0)
+        {
+            ToolbarItems[0].IsEnabled = !viewModel.IsBusy;
+        }
     }
 }

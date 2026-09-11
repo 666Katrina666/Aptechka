@@ -56,6 +56,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<AutoSyncScheduler>();
         builder.Services.AddSingleton<AppSyncLifetime>();
         builder.Services.AddSingleton<MainViewModel>();
+        builder.Services.AddSingleton<AutoSyncCoordinator>();
         builder.Services.AddSingleton<MainPage>();
         builder.Services.AddTransient<ItemEditorViewModel>();
         builder.Services.AddTransient<ItemEditorPage>();
