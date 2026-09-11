@@ -53,12 +53,14 @@ public partial class MainPage : ContentPage
             await FinishConflictResolutionAsync(pending, resolved, unloaded, result);
         unloaded = (_, _) =>
         {
-            page.Unloaded -= unloaded;
-            if (!page.IsResolveInFlight)
+            if (page.IsResolveInFlight)
             {
-                page.Resolved -= resolved;
-                pendingConflicts.Remove(pending);
+                return;
             }
+
+            page.Unloaded -= unloaded;
+            page.Resolved -= resolved;
+            pendingConflicts.Remove(pending);
         };
 
         pendingConflicts.Add(pending);
@@ -82,9 +84,15 @@ public partial class MainPage : ContentPage
         pending.Page.Unloaded -= unloaded;
         pendingConflicts.Remove(pending);
 
-        if (ReferenceEquals(pending.Page.Navigation.NavigationStack.LastOrDefault(), pending.Page))
+        try
         {
-            await pending.Page.Navigation.PopAsync();
+            if (ReferenceEquals(pending.Page.Navigation.NavigationStack.LastOrDefault(), pending.Page))
+            {
+                await pending.Page.Navigation.PopAsync();
+            }
+        }
+        catch (Exception)
+        {
         }
 
         await viewModel.CompleteConflictResolutionAsync(result);
