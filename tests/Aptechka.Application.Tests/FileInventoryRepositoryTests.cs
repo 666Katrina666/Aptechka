@@ -391,6 +391,52 @@ public sealed class FileInventoryRepositoryTests : IDisposable
         Assert.Equal("Головная боль", Assert.Single(await repository.GetProblemsAsync()).Name);
     }
 
+    [Theory]
+    [InlineData("missing-aliases")]
+    [InlineData("null-aliases")]
+    [InlineData("missing-itemIds")]
+    [InlineData("null-itemIds")]
+    [InlineData("null-alias")]
+    [InlineData("null-itemId")]
+    [InlineData("empty-alias")]
+    [InlineData("untrimmed-alias")]
+    [InlineData("duplicate-aliases")]
+    [InlineData("empty-itemId")]
+    [InlineData("untrimmed-itemId")]
+    [InlineData("duplicate-itemIds")]
+    [InlineData("invalid-itemId")]
+    [InlineData("untrimmed-name")]
+    [InlineData("untrimmed-note")]
+    [InlineData("blank-note")]
+    public async Task ReplaceAsync_ClassifiesMalformedProblemAsInvalidData(string kind)
+    {
+        var repository = CreateRepository();
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.ReplaceAsync(Snapshot(
+                ("aptechka.json", ManifestJson),
+                ($"problems/{ProblemId}.json", MalformedProblemJson(kind)))));
+
+        Assert.IsType<InvalidDataException>(exception);
+        Assert.IsNotType<InvalidOperationException>(exception);
+        Assert.IsNotType<NullReferenceException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task GetProblemsAsync_ClassifiesMalformedProblemAsInvalidData()
+    {
+        Directory.CreateDirectory(Path.Combine(rootPath, "problems"));
+        await File.WriteAllTextAsync(
+            Path.Combine(rootPath, "problems", $"{ProblemId}.json"),
+            MalformedProblemJson("null-aliases"));
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateRepository().GetProblemsAsync());
+
+        Assert.IsNotType<InvalidOperationException>(exception);
+        Assert.IsNotType<NullReferenceException>(exception.InnerException);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(rootPath))
@@ -502,6 +548,50 @@ public sealed class FileInventoryRepositoryTests : IDisposable
           "note": null
         }
         """;
+
+    private static string MalformedProblemJson(string kind) => kind switch
+    {
+        "missing-aliases" => ProblemJsonWith(aliases: null, itemIds: $"[\"{FirstId}\"]"),
+        "null-aliases" => ProblemJsonWith(aliases: "null", itemIds: $"[\"{FirstId}\"]"),
+        "missing-itemIds" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: null),
+        "null-itemIds" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: "null"),
+        "null-alias" => ProblemJsonWith(aliases: "[null]", itemIds: $"[\"{FirstId}\"]"),
+        "null-itemId" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: "[null]"),
+        "empty-alias" => ProblemJsonWith(aliases: "[\"\"]", itemIds: $"[\"{FirstId}\"]"),
+        "untrimmed-alias" => ProblemJsonWith(aliases: "[\" болит голова \"]", itemIds: $"[\"{FirstId}\"]"),
+        "duplicate-aliases" => ProblemJsonWith(aliases: "[\"болит голова\", \"Болит Голова\"]", itemIds: $"[\"{FirstId}\"]"),
+        "empty-itemId" => ProblemJsonWith(aliases: "[]", itemIds: "[\"\"]"),
+        "untrimmed-itemId" => ProblemJsonWith(aliases: "[]", itemIds: $"[\" {FirstId} \"]"),
+        "duplicate-itemIds" => ProblemJsonWith(aliases: "[]", itemIds: $"[\"{FirstId}\", \"{FirstId}\"]"),
+        "invalid-itemId" => ProblemJsonWith(aliases: "[]", itemIds: "[\"not-a-ulid\"]"),
+        "untrimmed-name" => ProblemJsonWith(aliases: "[]", itemIds: "[]", name: " Головная боль "),
+        "untrimmed-note" => ProblemJsonWith(aliases: "[]", itemIds: "[]", note: "\" домашняя \""),
+        "blank-note" => ProblemJsonWith(aliases: "[]", itemIds: "[]", note: "\"   \""),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
+    private static string ProblemJsonWith(
+        string? aliases,
+        string? itemIds,
+        string name = "Головная боль",
+        string note = "null")
+    {
+        var aliasesLine = aliases is null ? null : $"          \"aliases\": {aliases},";
+        var itemIdsLine = itemIds is null ? null : $"          \"itemIds\": {itemIds},";
+        return $$"""
+        {
+          "id": "{{ProblemId}}",
+          "revision": 1,
+          "createdAt": "2026-08-31T18:30:00+00:00",
+          "updatedAt": "2026-08-31T18:30:00+00:00",
+          "deletedAt": null,
+          "name": "{{name}}",
+        {{aliasesLine}}
+        {{itemIdsLine}}
+          "note": {{note}}
+        }
+        """;
+    }
 
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
     {

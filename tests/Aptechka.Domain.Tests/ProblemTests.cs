@@ -126,4 +126,46 @@ public sealed class ProblemTests
         Assert.Equal([ItemId], problem.ItemIds);
         Assert.Equal([ItemId], problem.Delete(Now.AddMinutes(6)).ItemIds);
     }
+
+    [Fact]
+    public void EnsureValid_RejectsNullAliasesAndItemIds()
+    {
+        AssertInvalid(Valid() with { Aliases = null! });
+        AssertInvalid(Valid() with { ItemIds = null! });
+    }
+
+    [Fact]
+    public void EnsureValid_RejectsNullEmptyUntrimmedAndDuplicateAliases()
+    {
+        AssertInvalid(Valid() with { Aliases = [null!] });
+        AssertInvalid(Valid() with { Aliases = [""] });
+        AssertInvalid(Valid() with { Aliases = ["   "] });
+        AssertInvalid(Valid() with { Aliases = [" болит голова "] });
+        AssertInvalid(Valid() with { Aliases = ["болит голова", "Болит Голова"] });
+    }
+
+    [Fact]
+    public void EnsureValid_RejectsNullEmptyUntrimmedDuplicateAndInvalidItemIds()
+    {
+        AssertInvalid(Valid() with { ItemIds = [null!] });
+        AssertInvalid(Valid() with { ItemIds = [""] });
+        AssertInvalid(Valid() with { ItemIds = [$" {ItemId} "] });
+        AssertInvalid(Valid() with { ItemIds = [ItemId, ItemId] });
+        AssertInvalid(Valid() with { ItemIds = ["not-a-ulid"] });
+    }
+
+    [Fact]
+    public void EnsureValid_RejectsNonCanonicalNameAndNote()
+    {
+        AssertInvalid(Valid() with { Name = " Головная боль " });
+        AssertInvalid(Valid() with { Note = "" });
+        AssertInvalid(Valid() with { Note = "   " });
+        AssertInvalid(Valid() with { Note = " домашняя " });
+    }
+
+    private static Problem Valid() =>
+        Problem.Create(ProblemId, Now, "Головная боль", ["болит голова"], [ItemId], null);
+
+    private static void AssertInvalid(Problem problem) =>
+        Assert.Throws<InvalidOperationException>(problem.EnsureValid);
 }

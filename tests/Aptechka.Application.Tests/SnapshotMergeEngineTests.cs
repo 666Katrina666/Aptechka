@@ -804,6 +804,42 @@ public sealed class SnapshotMergeEngineTests
         Assert.DoesNotContain("Головная боль", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("missing-aliases")]
+    [InlineData("null-aliases")]
+    [InlineData("missing-itemIds")]
+    [InlineData("null-itemIds")]
+    [InlineData("null-alias")]
+    [InlineData("null-itemId")]
+    [InlineData("empty-alias")]
+    [InlineData("untrimmed-alias")]
+    [InlineData("duplicate-aliases")]
+    [InlineData("empty-itemId")]
+    [InlineData("untrimmed-itemId")]
+    [InlineData("duplicate-itemIds")]
+    [InlineData("invalid-itemId")]
+    [InlineData("untrimmed-name")]
+    [InlineData("untrimmed-note")]
+    [InlineData("blank-note")]
+    public void Merge_ClassifiesMalformedProblemAsInvalidData(string kind)
+    {
+        var problem = Problem(ProblemId, "Головная боль");
+        var damaged = (ProblemPath(ProblemId), Encoding.UTF8.GetBytes(MalformedProblemJson(kind)));
+        var valid = Snap(File(Manifest()), File(problem));
+
+        var local = Assert.Throws<InvalidDataException>(() =>
+            Merge(valid, Snap(File(Manifest()), damaged), valid));
+        var remote = Assert.Throws<InvalidDataException>(() =>
+            Merge(valid, valid, Snap(File(Manifest()), damaged)));
+        var @base = Assert.Throws<InvalidDataException>(() =>
+            Merge(Snap(File(Manifest()), damaged), valid, valid));
+
+        Assert.IsNotType<NullReferenceException>(local.InnerException);
+        Assert.IsNotType<NullReferenceException>(remote.InnerException);
+        Assert.IsNotType<NullReferenceException>(@base.InnerException);
+        Assert.DoesNotContain("Головная боль", local.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Merge_KeepsItemsPackagesAndProblemsTogether()
     {
@@ -911,4 +947,48 @@ public sealed class SnapshotMergeEngineTests
     private static string PackagePath(string id) => $"packages/{id}.json";
 
     private static string ProblemPath(string id) => $"problems/{id}.json";
+
+    private static string MalformedProblemJson(string kind) => kind switch
+    {
+        "missing-aliases" => ProblemJsonWith(aliases: null, itemIds: $"[\"{ItemId}\"]"),
+        "null-aliases" => ProblemJsonWith(aliases: "null", itemIds: $"[\"{ItemId}\"]"),
+        "missing-itemIds" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: null),
+        "null-itemIds" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: "null"),
+        "null-alias" => ProblemJsonWith(aliases: "[null]", itemIds: $"[\"{ItemId}\"]"),
+        "null-itemId" => ProblemJsonWith(aliases: "[\"болит голова\"]", itemIds: "[null]"),
+        "empty-alias" => ProblemJsonWith(aliases: "[\"\"]", itemIds: $"[\"{ItemId}\"]"),
+        "untrimmed-alias" => ProblemJsonWith(aliases: "[\" болит голова \"]", itemIds: $"[\"{ItemId}\"]"),
+        "duplicate-aliases" => ProblemJsonWith(aliases: "[\"болит голова\", \"Болит Голова\"]", itemIds: $"[\"{ItemId}\"]"),
+        "empty-itemId" => ProblemJsonWith(aliases: "[]", itemIds: "[\"\"]"),
+        "untrimmed-itemId" => ProblemJsonWith(aliases: "[]", itemIds: $"[\" {ItemId} \"]"),
+        "duplicate-itemIds" => ProblemJsonWith(aliases: "[]", itemIds: $"[\"{ItemId}\", \"{ItemId}\"]"),
+        "invalid-itemId" => ProblemJsonWith(aliases: "[]", itemIds: "[\"not-a-ulid\"]"),
+        "untrimmed-name" => ProblemJsonWith(aliases: "[]", itemIds: "[]", name: " Головная боль "),
+        "untrimmed-note" => ProblemJsonWith(aliases: "[]", itemIds: "[]", note: "\" домашняя \""),
+        "blank-note" => ProblemJsonWith(aliases: "[]", itemIds: "[]", note: "\"   \""),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
+
+    private static string ProblemJsonWith(
+        string? aliases,
+        string? itemIds,
+        string name = "Головная боль",
+        string note = "null")
+    {
+        var aliasesLine = aliases is null ? null : $"          \"aliases\": {aliases},";
+        var itemIdsLine = itemIds is null ? null : $"          \"itemIds\": {itemIds},";
+        return $$"""
+        {
+          "id": "{{ProblemId}}",
+          "revision": 1,
+          "createdAt": "2026-08-31T08:00:00+00:00",
+          "updatedAt": "2026-08-31T08:00:00+00:00",
+          "deletedAt": null,
+          "name": "{{name}}",
+        {{aliasesLine}}
+        {{itemIdsLine}}
+          "note": {{note}}
+        }
+        """;
+    }
 }

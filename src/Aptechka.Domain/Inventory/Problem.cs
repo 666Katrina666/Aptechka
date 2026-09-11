@@ -87,7 +87,7 @@ public sealed record Problem(
             throw new InvalidOperationException("Ревизия проблемы должна быть положительной.");
         }
 
-        if (string.IsNullOrWhiteSpace(Name))
+        if (string.IsNullOrWhiteSpace(Name) || Name != Name.Trim())
         {
             throw new InvalidOperationException("Название проблемы не может быть пустым.");
         }
@@ -102,9 +102,68 @@ public sealed record Problem(
             throw new InvalidOperationException("Дата удаления не может быть раньше даты создания.");
         }
 
-        if (ItemIds.Any(static itemId => !UlidGenerator.IsValid(itemId)))
+        EnsureAliasesValid();
+        EnsureItemIdsValid();
+        EnsureNoteValid();
+    }
+
+    private void EnsureAliasesValid()
+    {
+        if (Aliases is null)
         {
-            throw new InvalidOperationException("Связь проблемы должна ссылаться на ULID позиции.");
+            throw new InvalidOperationException("Список алиасов проблемы отсутствует.");
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var alias in Aliases)
+        {
+            if (alias is null || string.IsNullOrWhiteSpace(alias) || alias != alias.Trim())
+            {
+                throw new InvalidOperationException("Алиасы проблемы должны быть непустыми и без внешних пробелов.");
+            }
+
+            if (!seen.Add(alias))
+            {
+                throw new InvalidOperationException("Алиасы проблемы не должны повторяться.");
+            }
+        }
+    }
+
+    private void EnsureItemIdsValid()
+    {
+        if (ItemIds is null)
+        {
+            throw new InvalidOperationException("Список связей проблемы отсутствует.");
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var itemId in ItemIds)
+        {
+            if (itemId is null ||
+                itemId.Length == 0 ||
+                itemId != itemId.Trim() ||
+                !UlidGenerator.IsValid(itemId))
+            {
+                throw new InvalidOperationException("Связь проблемы должна ссылаться на ULID позиции.");
+            }
+
+            if (!seen.Add(itemId))
+            {
+                throw new InvalidOperationException("Связи проблемы не должны повторяться.");
+            }
+        }
+    }
+
+    private void EnsureNoteValid()
+    {
+        if (Note is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(Note) || Note != Note.Trim())
+        {
+            throw new InvalidOperationException("Заметка проблемы должна быть пустой или без внешних пробелов.");
         }
     }
 

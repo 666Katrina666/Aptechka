@@ -129,9 +129,7 @@ public sealed class FileInventoryRepository(
             var problems = new List<Problem>();
             foreach (var path in Directory.EnumerateFiles(problemsPath, "*.json"))
             {
-                var problem = await ReadJsonAsync<Problem>(path, cancellationToken);
-                problem.EnsureValid();
-                problems.Add(problem);
+                problems.Add(await ReadProblemJsonAsync(path, cancellationToken));
             }
 
             return problems.OrderBy(static problem => problem.CreatedAt).ToArray();
@@ -400,8 +398,7 @@ public sealed class FileInventoryRepository(
 
         foreach (var problemPath in Directory.EnumerateFiles(snapshotProblemsPath, "*.json"))
         {
-            var problem = await ReadJsonAsync<Problem>(problemPath, cancellationToken);
-            problem.EnsureValid();
+            var problem = await ReadProblemJsonAsync(problemPath, cancellationToken);
             EnsureFileNameMatchesId(problemPath, problem.Id, "проблемы");
         }
     }
@@ -436,6 +433,23 @@ public sealed class FileInventoryRepository(
 
         var id = relativePath[prefix.Length..^".json".Length];
         return !id.Contains('/') && UlidGenerator.IsValid(id);
+    }
+
+    private static async Task<Problem> ReadProblemJsonAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var problem = await ReadJsonAsync<Problem>(path, cancellationToken);
+        try
+        {
+            problem.EnsureValid();
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException($"Нарушены инварианты данных: {path}", exception);
+        }
+
+        return problem;
     }
 
     private static async Task<T> ReadJsonAsync<T>(
