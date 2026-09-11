@@ -39,6 +39,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly ISyncService syncService;
     private readonly ISyncStateInspector syncStateInspector;
     private readonly ISecureTokenStore tokenStore;
+    private readonly AutoSyncScheduler scheduler;
+    private readonly AppSyncLifetime syncLifetime;
     private int refreshEpoch;
     private string searchQuery = string.Empty;
     private IReadOnlyList<CatalogItemRow> items = [];
@@ -53,19 +55,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string syncDetail = "Вставь GitHub-токен, чтобы синхронизировать аптечку.";
     private string? lastSuccessfulText;
     private bool isBusy;
+    private SyncFailureKind? lastFailure;
 
     public MainViewModel(
         InventoryService inventoryService,
         PackageService packageService,
         ISyncService syncService,
         ISyncStateInspector syncStateInspector,
-        ISecureTokenStore tokenStore)
+        ISecureTokenStore tokenStore,
+        AutoSyncScheduler scheduler,
+        AppSyncLifetime syncLifetime)
     {
         this.inventoryService = inventoryService;
         this.packageService = packageService;
         this.syncService = syncService;
         this.syncStateInspector = syncStateInspector;
         this.tokenStore = tokenStore;
+        this.scheduler = scheduler;
+        this.syncLifetime = syncLifetime;
+        scheduler.BusyChanged += () => SetBusy(scheduler.IsInFlight);
 
         owner = Preferences.Default.Get(OwnerPreference, "666Katrina666");
         repository = Preferences.Default.Get(RepositoryPreference, "aptechka-data");
@@ -77,6 +85,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public event EventHandler<ConflictResolutionRequest>? ConflictResolutionRequested;
+
+    public event EventHandler? SyncOperationFinished;
 
     public ICommand SyncCommand { get; }
 
@@ -192,6 +202,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public bool IsError => syncState == SyncUiState.Error;
 
+    public bool HasUnresolvedConflict => syncState == SyncUiState.Conflict;
+
+    public bool HasSavedSyncTarget
+    {
+        get
+        {
+            try
+            {
+                ReadSavedTarget().EnsureValid();
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+    }
+
     public bool IsBusy
     {
         get => isBusy;
@@ -205,6 +233,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ((Command)SyncCommand).ChangeCanExecute();
         }
     }
+
+    private void SetBusy(bool value)
+    {
+        if (MainThread.IsMainThread)
+        {
+            IsBusy = value;
+            return;
+        }
+
+        MainThread.BeginInvokeOnMainThread(() => IsBusy = scheduler.IsInFlight);
+    }
+
+    public void ShowAutomaticOffline()
+    {
+        if (syncState == SyncUiState.Conflict ||
+            (pinSessionStatus && syncState == SyncUiState.Error && lastFailure is not null and not SyncFailureKind.Offline))
+        {
+            return;
+        }
+
+        ShowFailure(SyncFailureKind.Offline);
+    }
+
+    public Task RunAutomaticAsync(AutoSyncReason reason, Func<bool> stillSafe, CancellationToken cancellationToken) =>
+        ExecuteSyncAsync(saveSettings: false, reason, stillSafe, cancellationToken);
 
     public async Task LoadAsync()
     {
@@ -296,77 +349,135 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void ShowSyncFailure(SyncFailureKind kind) => ShowFailure(kind);
 
-    private async Task SyncAsync()
+    private Task SyncAsync()
     {
-        if (IsBusy)
+        if (!scheduler.TryBeginExclusive())
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        IsBusy = true;
-        pinSessionStatus = false;
-        Show(SyncUiState.Syncing, "Отправляем и получаем изменения.");
+        return ExecuteSyncAsync(saveSettings: true, reason: null, static () => true, syncLifetime.Token);
+    }
+
+    private async Task ExecuteSyncAsync(
+        bool saveSettings,
+        AutoSyncReason? reason,
+        Func<bool> stillSafe,
+        CancellationToken cancellationToken)
+    {
+        var finish = AutoSyncFinish.PermanentFailure;
+        var released = false;
         try
         {
-            var token = TokenInput.Trim();
-            if (token.Length > 0)
-            {
-                await tokenStore.SaveTokenAsync(token);
-                TokenInput = string.Empty;
-                HasSavedToken = true;
-            }
-            else
-            {
-                token = await tokenStore.GetTokenAsync() ?? string.Empty;
-            }
-
+            var token = await ResolveTokenAsync(saveSettings);
             if (token.Length == 0)
             {
                 ShowFailure(SyncFailureKind.Authentication);
                 return;
             }
 
-            SaveSyncPreferences();
-            var target = new SyncTarget(Owner.Trim(), Repository.Trim(), Branch.Trim());
-            var result = await syncService.SyncAsync(
-                target,
-                token,
-                DeviceInfo.Name,
-                CancellationToken.None);
-
-            await RefreshItemsAsync();
-            if (result.Outcome == SyncOutcome.Conflict)
+            if (!stillSafe())
             {
-                ShowConflict();
-                var resolvable = result.Conflicts
-                    .Where(static conflict => !ConflictPresentation.IsManifest(conflict))
-                    .ToArray();
-                if (resolvable.Length > 0)
-                {
-                    ConflictResolutionRequested?.Invoke(
-                        this,
-                        new ConflictResolutionRequest(target, DeviceInfo.Name, resolvable));
-                }
-
+                released = true;
+                scheduler.TryKeepAutomaticClaim(new AutoSyncReadiness(true, true, false, false, HasUnresolvedConflict));
                 return;
             }
 
             pinSessionStatus = false;
-            Show(SyncUiState.Synced, "Изменения синхронизированы.");
+            Show(
+                SyncUiState.Syncing,
+                reason is { } automatic
+                    ? SyncStatusText.AutomaticDetail(automatic)
+                    : "Отправляем и получаем изменения.");
+
+            var target = saveSettings ? SaveCurrentTarget() : ReadSavedTarget();
+            var result = await syncService.SyncAsync(target, token, DeviceInfo.Name, cancellationToken);
+            await RefreshItemsAsync();
+            if (result.Outcome == SyncOutcome.Conflict)
+            {
+                ShowConflict();
+                RequestConflictPage(target, result);
+                finish = AutoSyncFinish.Conflict;
+                return;
+            }
+
+            pinSessionStatus = false;
             await RefreshSyncInspectionAsync();
+            Show(
+                SyncUiState.Synced,
+                reason is null
+                    ? "Изменения синхронизированы."
+                    : SyncStatusText.AutomaticCompleted);
+            finish = AutoSyncFinish.Succeeded;
+        }
+        catch (OperationCanceledException exception) when (AutoSyncPolicy.IsCallerCancellation(exception, cancellationToken))
+        {
+            finish = AutoSyncFinish.Cancelled;
         }
         catch (SyncFailureException exception)
         {
             ShowFailure(exception.Kind);
+            finish = AutoSyncPolicy.FinishFor(exception.Kind);
         }
         catch (Exception)
         {
             ShowFailure(SyncFailureKind.Unknown);
+            finish = AutoSyncFinish.PermanentFailure;
         }
         finally
         {
-            IsBusy = false;
+            if (!released)
+            {
+                scheduler.End(finish, suppressFollowUp: saveSettings);
+            }
+
+            SyncOperationFinished?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    private async Task<string> ResolveTokenAsync(bool allowTokenInput)
+    {
+        if (allowTokenInput)
+        {
+            var typed = TokenInput.Trim();
+            if (typed.Length > 0)
+            {
+                await tokenStore.SaveTokenAsync(typed);
+                TokenInput = string.Empty;
+                HasSavedToken = true;
+                return typed;
+            }
+        }
+
+        var saved = await tokenStore.GetTokenAsync() ?? string.Empty;
+        HasSavedToken = saved.Length > 0;
+        return saved;
+    }
+
+    private SyncTarget SaveCurrentTarget()
+    {
+        SaveSyncPreferences();
+        return new SyncTarget(Owner.Trim(), Repository.Trim(), Branch.Trim());
+    }
+
+    private static SyncTarget ReadSavedTarget() => new(
+        Preferences.Default.Get(OwnerPreference, "666Katrina666").Trim(),
+        Preferences.Default.Get(RepositoryPreference, "aptechka-data").Trim(),
+        Preferences.Default.Get(BranchPreference, "main").Trim());
+
+    private void RequestConflictPage(SyncTarget target, SyncResult result)
+    {
+        var resolvable = result.Conflicts
+            .Where(static conflict => !ConflictPresentation.IsManifest(conflict))
+            .ToArray();
+        if (resolvable.Length == 0)
+        {
+            return;
+        }
+
+        ConflictResolutionRequested?.Invoke(
+            this,
+            new ConflictResolutionRequest(target, DeviceInfo.Name, resolvable));
     }
 
     private async Task RefreshSyncInspectionAsync()
@@ -419,6 +530,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void ShowFailure(SyncFailureKind kind)
     {
         pinSessionStatus = true;
+        lastFailure = kind;
         Show(SyncUiState.Error, SyncStatusText.Detail(kind));
     }
 

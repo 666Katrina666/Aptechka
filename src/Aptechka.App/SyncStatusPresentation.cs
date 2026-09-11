@@ -47,6 +47,13 @@ internal static class SyncStatusText
             _ => "Не удалось синхронизировать. Локальные данные сохранены.",
         };
 
+    public static string AutomaticDetail(AutoSyncReason reason) =>
+        reason == AutoSyncReason.Reconnect
+            ? "Соединение восстановлено. Синхронизируем изменения."
+            : "Проверяем изменения при запуске приложения.";
+
+    public const string AutomaticCompleted = "Автоматическая синхронизация завершена.";
+
     public static string? LastSuccessful(DateTimeOffset? utc) =>
         utc is { } value ? $"Последняя успешная: {value.ToLocalTime().ToString("g", Russian)}" : null;
 }

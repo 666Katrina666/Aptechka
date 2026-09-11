@@ -75,6 +75,8 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
     private readonly ISecureTokenStore tokenStore;
     private readonly InventoryService inventoryService;
     private readonly PackageService packageService;
+    private readonly AutoSyncScheduler scheduler;
+    private readonly AppSyncLifetime syncLifetime;
     private SyncTarget? target;
     private string deviceName = string.Empty;
     private IReadOnlyList<ConflictChoiceRow> rows = [];
@@ -85,12 +87,16 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         ISyncService syncService,
         ISecureTokenStore tokenStore,
         InventoryService inventoryService,
-        PackageService packageService)
+        PackageService packageService,
+        AutoSyncScheduler scheduler,
+        AppSyncLifetime syncLifetime)
     {
         this.syncService = syncService;
         this.tokenStore = tokenStore;
         this.inventoryService = inventoryService;
         this.packageService = packageService;
+        this.scheduler = scheduler;
+        this.syncLifetime = syncLifetime;
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -154,19 +160,27 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
 
     public async Task ApplyAsync()
     {
-        if (IsBusy || !CanApply || target is null)
+        if (IsBusy || !CanApply || target is null || !scheduler.TryBeginExclusive())
         {
+            if (scheduler.IsInFlight)
+            {
+                Status = "Синхронизация уже выполняется.";
+            }
+
             return;
         }
 
         IsBusy = true;
         Status = "Применяем решения…";
+        var finish = AutoSyncFinish.PermanentFailure;
+        var ended = false;
         try
         {
             var token = await tokenStore.GetTokenAsync() ?? string.Empty;
             if (token.Length == 0)
             {
                 Status = SyncStatusText.Detail(SyncFailureKind.Authentication);
+                Failed?.Invoke(this, SyncFailureKind.Authentication);
                 return;
             }
 
@@ -178,19 +192,25 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
                 token,
                 deviceName,
                 resolutions,
-                CancellationToken.None);
+                syncLifetime.Token);
 
             if (result.Outcome is SyncOutcome.Initialized or
                 SyncOutcome.Pulled or
                 SyncOutcome.Pushed or
                 SyncOutcome.UpToDate)
             {
+                finish = AutoSyncFinish.Succeeded;
+                scheduler.End(finish, suppressFollowUp: true);
+                ended = true;
                 Completed?.Invoke(this, result);
                 return;
             }
 
             if (result.Outcome == SyncOutcome.Conflict)
             {
+                finish = AutoSyncFinish.Conflict;
+                scheduler.End(finish, suppressFollowUp: true);
+                ended = true;
                 await ReplaceConflictsAsync(
                     result.Conflicts,
                     "Данные изменились после открытия экрана. Проверь новые версии ещё раз.");
@@ -198,9 +218,15 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
             }
 
             Status = SyncStatusText.Detail(SyncFailureKind.Unknown);
+            Failed?.Invoke(this, SyncFailureKind.Unknown);
+        }
+        catch (OperationCanceledException exception) when (AutoSyncPolicy.IsCallerCancellation(exception, syncLifetime.Token))
+        {
+            finish = AutoSyncFinish.Cancelled;
         }
         catch (SyncFailureException exception)
         {
+            finish = AutoSyncPolicy.FinishFor(exception.Kind);
             Status = SyncStatusText.Detail(exception.Kind);
             Failed?.Invoke(this, exception.Kind);
         }
@@ -211,6 +237,11 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         }
         finally
         {
+            if (!ended)
+            {
+                scheduler.End(finish, suppressFollowUp: true);
+            }
+
             IsBusy = false;
         }
     }

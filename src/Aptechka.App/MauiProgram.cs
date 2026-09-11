@@ -53,6 +53,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<ISyncStateInspector, SyncStateInspector>();
         builder.Services.AddSingleton<ISyncService, GitHubSyncService>();
         builder.Services.AddSingleton<ISecureTokenStore, MauiSecureTokenStore>();
+        builder.Services.AddSingleton<AutoSyncScheduler>();
+        builder.Services.AddSingleton<AppSyncLifetime>();
         builder.Services.AddSingleton<MainViewModel>();
         builder.Services.AddSingleton<MainPage>();
         builder.Services.AddTransient<ItemEditorViewModel>();
