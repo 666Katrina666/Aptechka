@@ -50,6 +50,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string tokenInput = string.Empty;
     private bool hasSavedToken;
     private bool pinSessionStatus;
+    private bool gitHubSettingsInitialized;
+    private bool areGitHubSettingsExpanded = true;
     private SyncUiState syncState = SyncUiState.NotConfigured;
     private string syncHeadline = SyncStatusText.Headline(SyncUiState.NotConfigured);
     private string syncDetail = "Вставь GitHub-токен, чтобы синхронизировать аптечку.";
@@ -80,6 +82,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         branch = Preferences.Default.Get(BranchPreference, "main");
 
         SyncCommand = new Command(async () => await SyncAsync(), () => !IsBusy);
+        ToggleGitHubSettingsCommand = new Command(ToggleGitHubSettings);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -89,6 +92,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public event EventHandler? SyncOperationFinished;
 
     public ICommand SyncCommand { get; }
+
+    public ICommand ToggleGitHubSettingsCommand { get; }
 
     public string SearchQuery
     {
@@ -204,6 +209,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public bool HasUnresolvedConflict => syncState == SyncUiState.Conflict;
 
+    public bool AreGitHubSettingsExpanded
+    {
+        get => areGitHubSettingsExpanded;
+        private set => SetField(ref areGitHubSettingsExpanded, value);
+    }
+
     public bool HasSavedSyncTarget
     {
         get
@@ -274,6 +285,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         await RefreshItemsAsync();
+        InitializeGitHubSettingsVisibility();
         if (tokenStoreFailed || pinSessionStatus)
         {
             return;
@@ -531,6 +543,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         pinSessionStatus = true;
         lastFailure = kind;
+        if (RequiresGitHubSettings(kind))
+        {
+            AreGitHubSettingsExpanded = true;
+        }
+
         Show(SyncUiState.Error, SyncStatusText.Detail(kind));
     }
 
@@ -578,6 +595,26 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Preferences.Default.Set(RepositoryPreference, Repository.Trim());
         Preferences.Default.Set(BranchPreference, Branch.Trim());
     }
+
+    private void InitializeGitHubSettingsVisibility()
+    {
+        if (gitHubSettingsInitialized)
+        {
+            return;
+        }
+
+        AreGitHubSettingsExpanded = !HasSavedToken || !HasSavedSyncTarget;
+        gitHubSettingsInitialized = true;
+    }
+
+    private void ToggleGitHubSettings() =>
+        AreGitHubSettingsExpanded = !AreGitHubSettingsExpanded;
+
+    private static bool RequiresGitHubSettings(SyncFailureKind kind) =>
+        kind is SyncFailureKind.InvalidConfiguration
+            or SyncFailureKind.Authentication
+            or SyncFailureKind.AccessDenied
+            or SyncFailureKind.RepositoryNotFound;
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
