@@ -12,7 +12,6 @@ $ProductionPackage = 'io.github.vakineti.aptechka'
 $E2EPackage = 'io.github.vakineti.aptechka.e2e'
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $AppiumRoot = Join-Path $RepositoryRoot 'tools\appium'
-$AppiumHome = Join-Path $AppiumRoot '.appium-home'
 $ProjectPath = Join-Path $RepositoryRoot 'src\Aptechka.App\Aptechka.App.csproj'
 $TestProject = Join-Path $RepositoryRoot 'tests\Aptechka.Android.E2E.Tests\Aptechka.Android.E2E.Tests.csproj'
 $ArtifactDir = Join-Path $RepositoryRoot 'artifacts\e2e\android'
@@ -73,13 +72,14 @@ function Assert-NpmVersion([string]$npmPath) {
 }
 
 function Get-AdbDevices([string]$adbPath) {
-    $lines = @(& $adbPath devices)
-    $devices = foreach ($line in $lines) {
+    $ids = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in @(& $adbPath devices)) {
         if ($line -match '^(?<id>\S+)\s+device$') {
-            $Matches.id
+            $ids.Add($Matches.id)
         }
     }
-    return @($devices)
+
+    return $ids.ToArray()
 }
 
 function Get-ApkPackageId([string]$aaptPath, [string]$apkPath) {
@@ -122,6 +122,101 @@ function Wait-AppiumReady([uri]$url, [int]$seconds) {
     } while ((Get-Date) -lt $deadline)
 
     throw "Appium did not become ready at $status. See artifacts/e2e/android/appium.log."
+}
+
+function Clear-AppiumHomeFromProcess {
+    if (Test-Path Env:APPIUM_HOME) {
+        Remove-Item Env:APPIUM_HOME
+    }
+}
+
+function ConvertFrom-AppiumJson([object]$raw) {
+    $text = ($raw | Out-String)
+    $start = $text.IndexOf('{')
+    $end = $text.LastIndexOf('}')
+    if ($start -lt 0 -or $end -le $start) {
+        throw "Appium did not return JSON. Output: $text"
+    }
+
+    return $text.Substring($start, $end - $start + 1) | ConvertFrom-Json
+}
+
+function Invoke-ProjectAppium {
+    param(
+        [Parameter(Mandatory)]
+        [string]$NpxPath,
+        [Parameter(Mandatory)]
+        [string[]]$AppiumArgs,
+        [switch]$Capture
+    )
+
+    Clear-AppiumHomeFromProcess
+    Push-Location $AppiumRoot
+    $previousError = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($Capture) {
+            $output = & $NpxPath --no-install appium @AppiumArgs 2>&1 | ForEach-Object { "$_" }
+            return [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Output   = $output
+            }
+        }
+
+        & $NpxPath --no-install appium @AppiumArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "appium $($AppiumArgs -join ' ') failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousError
+        Pop-Location
+    }
+}
+
+function Assert-ProjectUiAutomator2([string]$npxPath) {
+    $result = Invoke-ProjectAppium -NpxPath $npxPath -AppiumArgs @('driver', 'list', '--installed', '--json') -Capture
+    if ($result.ExitCode -ne 0) {
+        throw "appium driver list --installed --json failed with exit code $($result.ExitCode). $($result.Output)"
+    }
+
+    $drivers = ConvertFrom-AppiumJson $result.Output
+    $driver = $drivers.uiautomator2
+    $requiredVersion = '8.1.1'
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $AppiumRoot 'node_modules\appium-uiautomator2-driver'))
+    if (-not $driver -or -not $driver.installed) {
+        throw "Project-local UiAutomator2 was not found. Required: uiautomator2 $requiredVersion from $expectedPath."
+    }
+
+    $foundVersion = [string]$driver.version
+    $foundPath = if ($driver.installPath) { [IO.Path]::GetFullPath([string]$driver.installPath) } else { '' }
+    $samePath = [string]::Equals(
+        $foundPath.TrimEnd('\'),
+        $expectedPath.TrimEnd('\'),
+        [StringComparison]::OrdinalIgnoreCase)
+    if ($foundVersion -ne $requiredVersion -or -not $samePath) {
+        throw "Found uiautomator2 $foundVersion at '$foundPath'. Required: $requiredVersion from '$expectedPath'."
+    }
+
+    Write-Host "Found uiautomator2 $foundVersion from $expectedPath"
+}
+
+function Assert-UiAutomator2Doctor([string]$npxPath) {
+    $result = Invoke-ProjectAppium -NpxPath $npxPath -AppiumArgs @('driver', 'doctor', 'uiautomator2') -Capture
+    $text = ($result.Output | Out-String)
+    Write-Host $text
+    if ($result.ExitCode -eq 0) {
+        return
+    }
+
+    $emulatorMissing = $text -match 'emulator could NOT be found'
+    $onlyOneRequired = $text -match ',\s*1 required fix needed'
+    if ($emulatorMissing -and $onlyOneRequired) {
+        Write-Host 'UiAutomator2 doctor requires emulator.exe; this runner uses a physical device and will continue.'
+        return
+    }
+
+    throw "appium driver doctor uiautomator2 failed with exit code $($result.ExitCode)."
 }
 
 function Stop-StartedAppium {
@@ -189,18 +284,18 @@ try {
 
     Write-Step 'Checking project-local Appium'
     $lockFile = Join-Path $AppiumRoot 'package-lock.json'
-    if (-not (Test-Path -LiteralPath (Join-Path $AppiumRoot 'node_modules\appium\package.json'))) {
+    if (-not (Test-Path -LiteralPath $lockFile)) {
+        throw 'tools/appium/package-lock.json is required. The runner only uses npm ci.'
+    }
+
+    $appiumPkg = Join-Path $AppiumRoot 'node_modules\appium\package.json'
+    $driverPkg = Join-Path $AppiumRoot 'node_modules\appium-uiautomator2-driver\package.json'
+    if (-not (Test-Path -LiteralPath $appiumPkg) -or -not (Test-Path -LiteralPath $driverPkg)) {
         Push-Location $AppiumRoot
         try {
-            if (Test-Path -LiteralPath $lockFile) {
-                & $npm ci
-            }
-            else {
-                & $npm install
-            }
-
+            & $npm ci
             if ($LASTEXITCODE -ne 0) {
-                throw "npm install in tools/appium failed with exit code $LASTEXITCODE."
+                throw "npm ci in tools/appium failed with exit code $LASTEXITCODE."
             }
         }
         finally {
@@ -208,42 +303,21 @@ try {
         }
     }
 
-    $env:APPIUM_HOME = $AppiumHome
-    $driverSrc = Join-Path $AppiumRoot 'node_modules\appium-uiautomator2-driver'
-    $driverDst = Join-Path $AppiumHome 'node_modules\appium-uiautomator2-driver\package.json'
-    if (-not (Test-Path -LiteralPath $driverDst)) {
-        Write-Step 'Registering project-local UiAutomator2 driver'
-        Push-Location $AppiumRoot
-        try {
-            & $npx --no-install appium driver install --source local $driverSrc
-            if ($LASTEXITCODE -ne 0) {
-                throw "Appium driver install failed with exit code $LASTEXITCODE."
-            }
-        }
-        finally {
-            Pop-Location
-        }
-    }
+    Clear-AppiumHomeFromProcess
+
+    Write-Step 'Verifying npm-managed UiAutomator2'
+    Assert-ProjectUiAutomator2 $npx
 
     Write-Step 'Running UiAutomator2 doctor'
-    Push-Location $AppiumRoot
-    try {
-        & $npx --no-install appium driver doctor uiautomator2
-        if ($LASTEXITCODE -ne 0) {
-            throw "appium driver doctor uiautomator2 failed with exit code $LASTEXITCODE."
-        }
-    }
-    finally {
-        Pop-Location
-    }
+    Assert-UiAutomator2Doctor $npx
 
     Write-Step 'Selecting Android device'
-    $unauthorized = @(& $adb devices) | Where-Object { $_ -match '\tunauthorized$' }
+    $unauthorized = @((& $adb devices) | Where-Object { $_ -match '\tunauthorized$' })
     if ($unauthorized.Count -gt 0) {
         throw 'adb reports an unauthorized device. Unlock the phone and accept the USB debugging prompt.'
     }
 
-    $devices = Get-AdbDevices $adb
+    $devices = @(Get-AdbDevices $adb)
     if ($devices.Count -eq 0) {
         throw 'No Android device is connected. Enable USB debugging and run adb devices until the status is "device".'
     }
@@ -320,6 +394,7 @@ Re-run with -DeviceId <adb-id>. The script will not install or clear anything un
         $appiumEntry = Join-Path $AppiumRoot 'node_modules\appium\build\lib\main.js'
     }
 
+    Clear-AppiumHomeFromProcess
     $appiumLog = Join-Path $ArtifactDir 'appium.log'
     $appiumErr = Join-Path $ArtifactDir 'appium.err.log'
     $script:AppiumProcess = Start-Process -FilePath $node -ArgumentList @(
