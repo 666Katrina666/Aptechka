@@ -48,8 +48,8 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
         {
             return wait.Until(current =>
             {
-                var element = current.FindElement(MobileBy.AccessibilityId(automationId));
-                return element.Displayed ? (AppiumElement)element : null;
+                var element = FindDisplayed(current, automationId);
+                return element is { Displayed: true } ? element : null;
             }) ?? throw new InvalidOperationException($"Element '{automationId}' was not displayed.");
         }
         catch (WebDriverTimeoutException)
@@ -66,7 +66,7 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
         {
             wait.Until(current =>
             {
-                var matches = current.FindElements(MobileBy.AccessibilityId(automationId));
+                var matches = FindAll(current, automationId);
                 return matches.Count == 0 || matches.All(static element => !element.Displayed);
             });
         }
@@ -96,6 +96,42 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
 
     private AndroidDriver RequireDriver() =>
         Driver ?? throw new InvalidOperationException("The Appium Android session was not started.");
+
+    // MAUI ToolbarItems expose AutomationId as accessibility id (content-desc).
+    // Layouts and labels typically expose it as Android resource-id instead.
+    private static IReadOnlyList<By> LocatorsFor(string automationId) =>
+    [
+        MobileBy.AccessibilityId(automationId),
+        MobileBy.Id(automationId),
+        MobileBy.Id($"{E2ESettings.E2EPackageId}:id/{automationId}"),
+    ];
+
+    private static AppiumElement? FindDisplayed(ISearchContext current, string automationId) =>
+        FindAll(current, automationId).FirstOrDefault(static element =>
+        {
+            try
+            {
+                return element.Displayed;
+            }
+            catch (StaleElementReferenceException)
+            {
+                return false;
+            }
+        });
+
+    private static List<AppiumElement> FindAll(ISearchContext current, string automationId)
+    {
+        var matches = new List<AppiumElement>();
+        foreach (var locator in LocatorsFor(automationId))
+        {
+            foreach (var element in current.FindElements(locator))
+            {
+                matches.Add((AppiumElement)element);
+            }
+        }
+
+        return matches;
+    }
 
     private void Quit()
     {
