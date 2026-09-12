@@ -1,7 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net9.0-android;net9.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks>net9.0;net9.0-android;net9.0-windows10.0.19041.0</TargetFrameworks>
+		<OutputType Condition="'$(TargetFramework)' != 'net9.0'">Exe</OutputType>
 		<!-- Uncomment to also build the tizen app. You will need to install tizen by following this: https://github.com/Samsung/Tizen.NET -->
 		<!-- <TargetFrameworks>$(TargetFrameworks);net9.0-tizen</TargetFrameworks> -->
 
@@ -12,7 +13,6 @@
 		either BOTH runtimes must be indicated or ONLY macatalyst-x64. -->
 		<!-- For example: <RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers> -->
 
-		<OutputType>Exe</OutputType>
 		<RootNamespace>Aptechka.App</RootNamespace>
 		<UseMaui>true</UseMaui>
 		<SingleProject>true</SingleProject>
@@ -26,8 +26,8 @@
 		<ApplicationId>io.github.vakineti.aptechka</ApplicationId>
 
 		<!-- Versions -->
-		<ApplicationDisplayVersion>1.5.0</ApplicationDisplayVersion>
-		<ApplicationVersion>7</ApplicationVersion>
+		<ApplicationDisplayVersion>1.6.0</ApplicationDisplayVersion>
+		<ApplicationVersion>8</ApplicationVersion>
 
 		<!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
 		<WindowsPackageType>None</WindowsPackageType>
@@ -64,6 +64,10 @@
 		<ProjectReference Include="..\Aptechka.Application\Aptechka.Application.csproj" />
 		<ProjectReference Include="..\Aptechka.Domain\Aptechka.Domain.csproj" />
 		<ProjectReference Include="..\Aptechka.Infrastructure\Aptechka.Infrastructure.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="Aptechka.App.Tests" />
 	</ItemGroup>
 
 </Project>

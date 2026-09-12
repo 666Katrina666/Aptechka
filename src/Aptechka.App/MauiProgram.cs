@@ -67,6 +67,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<MainPage>();
         builder.Services.AddTransient<ItemEditorViewModel>();
         builder.Services.AddTransient<ItemEditorPage>();
+        builder.Services.AddTransient<ShoppingViewModel>();
+        builder.Services.AddTransient<ShoppingPage>();
         builder.Services.AddTransient<ProblemsViewModel>();
         builder.Services.AddTransient<ProblemsPage>();
         builder.Services.AddTransient<ProblemEditorViewModel>();

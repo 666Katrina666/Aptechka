@@ -279,10 +279,16 @@ public sealed class ConflictResolutionViewModel : INotifyPropertyChanged
         Status = message;
     }
 
-    private async Task<InventoryItem?> TryGetItemAsync(SyncConflict conflict) =>
-        ConflictPresentation.TryGetItemId(conflict.Path, out var id)
-            ? await TryGetAsync(() => inventoryService.GetItemAsync(id))
-            : null;
+    private async Task<InventoryItem?> TryGetItemAsync(SyncConflict conflict)
+    {
+        if (!ConflictPresentation.TryGetItemId(conflict.Path, out var id) &&
+            !ConflictPresentation.TryGetShoppingId(conflict.Path, out id))
+        {
+            return null;
+        }
+
+        return await TryGetAsync(() => inventoryService.GetItemAsync(id));
+    }
 
     private async Task<Problem?> TryGetProblemAsync(SyncConflict conflict) =>
         ConflictPresentation.TryGetProblemId(conflict.Path, out var id)

@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="Aptechka.App.ShoppingPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
+    x:DataType="viewModels:ShoppingViewModel"
+    Title="{Binding Title}">
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Clicked="OnAddOrCancelClicked" Text="Добавить" />
+    </ContentPage.ToolbarItems>
+
+    <Grid Padding="16" RowDefinitions="Auto,*,Auto" RowSpacing="12">
+        <Label
+            IsVisible="{Binding HasError}"
+            Text="{Binding ErrorMessage}"
+            TextColor="#B3261E" />
+
+        <Grid Grid.Row="1" IsVisible="{Binding IsBrowsing}" RowDefinitions="Auto,*" RowSpacing="12">
+            <SearchBar Placeholder="Название, форма, дозировка или заметка" Text="{Binding SearchQuery}" />
+            <Grid Grid.Row="1" RowDefinitions="*,Auto,*" RowSpacing="8">
+                <Grid RowDefinitions="Auto,*" RowSpacing="4">
+                    <Label FontAttributes="Bold" FontSize="16" Text="Нужно купить" />
+                    <Grid Grid.Row="1">
+                        <CollectionView
+                            x:Name="ActiveList"
+                            ItemsSource="{Binding Active}"
+                            SelectionChanged="OnActiveSelectionChanged"
+                            SelectionMode="Single">
+                            <CollectionView.ItemTemplate>
+                                <DataTemplate x:DataType="viewModels:ShoppingRow">
+                                    <VerticalStackLayout Padding="4,10" Spacing="2">
+                                        <Label
+                                            FontAttributes="Bold"
+                                            FontSize="18"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Name}" />
+                                        <Label
+                                            IsVisible="{Binding HasDetails}"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Details}"
+                                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                        <Label FontSize="13" Text="{Binding Availability}" />
+                                        <Label
+                                            FontSize="13"
+                                            IsVisible="{Binding HasNote}"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Note}"
+                                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                        <Label
+                                            FontSize="12"
+                                            IsVisible="{Binding HasManualReason}"
+                                            Text="Добавлено вручную"
+                                            TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                        <Label
+                                            FontSize="12"
+                                            IsVisible="{Binding HasKeepInStockMissingReason}"
+                                            Text="Обязательный запас закончился"
+                                            TextColor="{AppThemeBinding Light={StaticResource Primary}, Dark={StaticResource PrimaryDark}}" />
+                                    </VerticalStackLayout>
+                                </DataTemplate>
+                            </CollectionView.ItemTemplate>
+                        </CollectionView>
+                        <Label
+                            HorizontalOptions="Center"
+                            HorizontalTextAlignment="Center"
+                            IsVisible="{Binding IsActiveEmpty}"
+                            MaximumWidthRequest="320"
+                            VerticalOptions="Center"
+                            Text="{Binding ActiveEmptyMessage}"
+                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                    </Grid>
+                </Grid>
+
+                <BoxView Grid.Row="1" HeightRequest="1" Color="{StaticResource Gray300}" />
+
+                <Grid Grid.Row="2" RowDefinitions="Auto,*" RowSpacing="4">
+                    <Label FontAttributes="Bold" FontSize="16" Text="Недавно закрыто" />
+                    <Grid Grid.Row="1">
+                        <CollectionView
+                            x:Name="RecentList"
+                            ItemsSource="{Binding RecentlyClosed}"
+                            SelectionChanged="OnRecentSelectionChanged"
+                            SelectionMode="Single">
+                            <CollectionView.ItemTemplate>
+                                <DataTemplate x:DataType="viewModels:ShoppingRow">
+                                    <VerticalStackLayout Padding="4,10" Spacing="2">
+                                        <Label
+                                            FontAttributes="Bold"
+                                            FontSize="18"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Name}" />
+                                        <Label
+                                            IsVisible="{Binding HasDetails}"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Details}"
+                                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                        <Label FontSize="13" Text="{Binding Availability}" />
+                                        <Label
+                                            FontSize="13"
+                                            IsVisible="{Binding HasNote}"
+                                            LineBreakMode="TailTruncation"
+                                            Text="{Binding Note}"
+                                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                    </VerticalStackLayout>
+                                </DataTemplate>
+                            </CollectionView.ItemTemplate>
+                        </CollectionView>
+                        <Label
+                            HorizontalOptions="Center"
+                            HorizontalTextAlignment="Center"
+                            IsVisible="{Binding IsRecentEmpty}"
+                            MaximumWidthRequest="320"
+                            VerticalOptions="Center"
+                            Text="{Binding RecentEmptyMessage}"
+                            TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Grid Grid.Row="1" IsVisible="{Binding IsAdding}" RowDefinitions="Auto,*" RowSpacing="12">
+            <SearchBar Placeholder="Название, форма или дозировка" Text="{Binding CandidateSearchQuery}" />
+            <Grid Grid.Row="1">
+                <CollectionView
+                    x:Name="CandidateList"
+                    ItemsSource="{Binding Candidates}"
+                    SelectionChanged="OnCandidateSelectionChanged"
+                    SelectionMode="Single">
+                    <CollectionView.ItemTemplate>
+                        <DataTemplate x:DataType="viewModels:ShoppingCandidateRow">
+                            <VerticalStackLayout Padding="4,10" Spacing="2">
+                                <Label
+                                    FontAttributes="Bold"
+                                    FontSize="18"
+                                    LineBreakMode="TailTruncation"
+                                    Text="{Binding Caption}" />
+                                <Label
+                                    IsVisible="{Binding HasDetails}"
+                                    LineBreakMode="TailTruncation"
+                                    Text="{Binding Details}"
+                                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+                                <Label FontSize="13" Text="{Binding Availability}" />
+                            </VerticalStackLayout>
+                        </DataTemplate>
+                    </CollectionView.ItemTemplate>
+                </CollectionView>
+                <Label
+                    HorizontalOptions="Center"
+                    HorizontalTextAlignment="Center"
+                    IsVisible="{Binding IsCandidatesEmpty}"
+                    MaximumWidthRequest="320"
+                    VerticalOptions="Center"
+                    Text="{Binding CandidateEmptyMessage}"
+                    TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
+            </Grid>
+        </Grid>
+
+        <ActivityIndicator
+            Grid.Row="2"
+            IsRunning="{Binding IsBusy}"
+            IsVisible="{Binding IsBusy}" />
+    </Grid>
+</ContentPage>

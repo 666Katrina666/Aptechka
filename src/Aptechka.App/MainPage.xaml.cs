@@ -42,6 +42,16 @@ public partial class MainPage : ContentPage
         base.OnDisappearing();
     }
 
+    private async void OnShoppingClicked(object? sender, EventArgs e)
+    {
+        if (viewModel.IsBusy)
+        {
+            return;
+        }
+
+        await Navigation.PushAsync(services.GetRequiredService<ShoppingPage>());
+    }
+
     private async void OnProblemsClicked(object? sender, EventArgs e)
     {
         if (viewModel.IsBusy)

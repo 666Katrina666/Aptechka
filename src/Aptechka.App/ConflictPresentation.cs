@@ -24,6 +24,9 @@ internal static class ConflictPresentation
     public static bool TryGetProblemId(string path, out string id) =>
         TryGetId(path, "problems/", out id);
 
+    public static bool TryGetShoppingId(string path, out string id) =>
+        TryGetId(path, "shopping/", out id);
+
     public static string EntityCaption(
         SyncConflict conflict,
         InventoryItem? item,
@@ -31,6 +34,17 @@ internal static class ConflictPresentation
         InventoryItem? packageItem,
         Problem? problem)
     {
+        if (TryGetShoppingId(conflict.Path, out var shoppingId))
+        {
+            if (item is not null)
+            {
+                return ItemCaption(item.Name, item.Form, item.Strength);
+            }
+
+            var linkedId = TryReadShoppingItemId(conflict) ?? shoppingId;
+            return string.IsNullOrEmpty(linkedId) ? "Покупка" : FormatItemLink(linkedId, null);
+        }
+
         if (TryDescribeJson(conflict.LocalValueJson, out var described) ||
             TryDescribeJson(conflict.RemoteValueJson, out described) ||
             TryDescribeJson(conflict.BaseValueJson, out described))
@@ -63,7 +77,9 @@ internal static class ConflictPresentation
             return "Позиция";
         }
 
-        return TryGetProblemId(conflict.Path, out _) ? "Бытовая проблема" : "Различие в данных";
+        return TryGetProblemId(conflict.Path, out _)
+            ? "Бытовая проблема"
+            : TryGetShoppingId(conflict.Path, out _) ? "Покупка" : "Различие в данных";
     }
 
     public static string FieldCaption(SyncConflict conflict) =>
@@ -91,6 +107,7 @@ internal static class ConflictPresentation
                 "shelfLifeAfterOpeningDays" => "Срок после вскрытия",
                 "stockState" => "Наличие",
                 "note" => "Заметка",
+                "isRequested" => "Ручная отметка",
                 "deletedAt" => "Архивирование",
                 _ => "Различие",
             },
@@ -123,6 +140,11 @@ internal static class ConflictPresentation
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var conflict in conflicts)
         {
+            if (TryGetShoppingId(conflict.Path, out var shoppingId))
+            {
+                ids.Add(shoppingId);
+            }
+
             CollectFromJson(conflict.BaseValueJson, conflict.Field, ids);
             CollectFromJson(conflict.LocalValueJson, conflict.Field, ids);
             CollectFromJson(conflict.RemoteValueJson, conflict.Field, ids);
@@ -158,8 +180,8 @@ internal static class ConflictPresentation
         element.ValueKind switch
         {
             JsonValueKind.Null => Unspecified,
-            JsonValueKind.True => "Да",
-            JsonValueKind.False => "Нет",
+            JsonValueKind.True => FormatBoolean(field, true),
+            JsonValueKind.False => FormatBoolean(field, false),
             JsonValueKind.Number => element.TryGetInt64(out var number) ? number.ToString(Russian) : Unspecified,
             JsonValueKind.String => FormatString(element.GetString()),
             JsonValueKind.Array => FormatArray(element, field, itemNames),
@@ -216,6 +238,11 @@ internal static class ConflictPresentation
             return TryReadName(element, out var name)
                 ? $"{Archived}: {name}"
                 : Archived;
+        }
+
+        if (LooksLikeShopping(element))
+        {
+            return ShoppingCaption(element);
         }
 
         if (LooksLikeProblem(element))
@@ -290,6 +317,56 @@ internal static class ConflictPresentation
         !element.TryGetProperty("category", out _) &&
         !element.TryGetProperty("stockState", out _);
 
+    private static bool LooksLikeShopping(JsonElement element) =>
+        element.TryGetProperty("isRequested", out _) &&
+        !element.TryGetProperty("stockState", out _) &&
+        !element.TryGetProperty("category", out _);
+
+    private static string ShoppingCaption(JsonElement element)
+    {
+        var requested = element.TryGetProperty("isRequested", out var property) &&
+                        property.ValueKind == JsonValueKind.True
+            ? "Добавлено вручную"
+            : "Не отмечено вручную";
+        var note = ReadString(element, "note");
+        return string.IsNullOrEmpty(note) ? requested : $"{requested}. {note}";
+    }
+
+    private static string? TryReadShoppingItemId(SyncConflict conflict) =>
+        ReadItemId(conflict.LocalValueJson)
+        ?? ReadItemId(conflict.RemoteValueJson)
+        ?? ReadItemId(conflict.BaseValueJson);
+
+    private static string? ReadItemId(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? ReadString(document.RootElement, "itemId")
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string FormatBoolean(string field, bool value)
+    {
+        if (field == "isRequested")
+        {
+            return value ? "Добавлено вручную" : "Не отмечено вручную";
+        }
+
+        return value ? "Да" : "Нет";
+    }
+
     private static string ItemCaption(string? name, string? form, string? strength)
     {
         var parts = new[] { name, form, strength }.Where(static value => !string.IsNullOrWhiteSpace(value));
@@ -343,6 +420,14 @@ internal static class ConflictPresentation
             itemIds.ValueKind == JsonValueKind.Array)
         {
             AddIds(itemIds, ids);
+            return;
+        }
+
+        if (element.ValueKind == JsonValueKind.Object &&
+            LooksLikeShopping(element) &&
+            ReadString(element, "itemId") is { Length: > 0 } itemId)
+        {
+            ids.Add(itemId);
         }
     }
 

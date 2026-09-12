@@ -8,6 +8,7 @@
     Title="Аптечка">
 
     <ContentPage.ToolbarItems>
+        <ToolbarItem Clicked="OnShoppingClicked" Text="Покупки" />
         <ToolbarItem Clicked="OnProblemsClicked" Text="Проблемы" />
         <ToolbarItem Clicked="OnAddClicked" Text="Добавить" />
     </ContentPage.ToolbarItems>
