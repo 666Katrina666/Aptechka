@@ -7,7 +7,7 @@
     x:DataType="viewModels:ItemEditorViewModel"
     Title="{Binding Title}">
 
-    <ScrollView>
+    <ScrollView AutomationId="ItemEditor.Page">
         <VerticalStackLayout Padding="16" Spacing="12" MaximumWidthRequest="720">
             <Label
                 IsVisible="{Binding HasError}"
@@ -15,7 +15,7 @@
                 TextColor="#B3261E" />
 
             <Label Style="{StaticResource Body}" Text="Название" />
-            <Entry Placeholder="Например, Ибупрофен" Text="{Binding Name}" />
+            <Entry AutomationId="ItemEditor.Name" Placeholder="Например, Ибупрофен" Text="{Binding Name}" />
 
             <Label Style="{StaticResource Body}" Text="Алиасы через запятую" />
             <Entry Placeholder="Нурофен" Text="{Binding Aliases}" />
@@ -29,11 +29,11 @@
             <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                 <VerticalStackLayout Grid.Column="0" Spacing="6">
                     <Label Style="{StaticResource Body}" Text="Форма" />
-                    <Entry Placeholder="таблетки" Text="{Binding Form}" />
+                    <Entry AutomationId="ItemEditor.Form" Placeholder="таблетки" Text="{Binding Form}" />
                 </VerticalStackLayout>
                 <VerticalStackLayout Grid.Column="1" Spacing="6">
                     <Label Style="{StaticResource Body}" Text="Дозировка / концентрация" />
-                    <Entry Placeholder="200 мг" Text="{Binding Strength}" />
+                    <Entry AutomationId="ItemEditor.Strength" Placeholder="200 мг" Text="{Binding Strength}" />
                 </VerticalStackLayout>
             </Grid>
 
@@ -46,7 +46,7 @@
 
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                 <Label Grid.Column="0" VerticalOptions="Center" Text="Всегда иметь дома" />
-                <Switch Grid.Column="1" IsToggled="{Binding KeepInStock}" />
+                <Switch AutomationId="ItemEditor.KeepInStock" Grid.Column="1" IsToggled="{Binding KeepInStock}" />
             </Grid>
 
             <VerticalStackLayout IsVisible="{Binding IsEditing}" Spacing="12">
@@ -98,7 +98,7 @@
                 </VerticalStackLayout>
             </VerticalStackLayout>
 
-            <Button Command="{Binding SaveCommand}" Text="Сохранить" />
+            <Button AutomationId="ItemEditor.Save" Command="{Binding SaveCommand}" Text="Сохранить" />
             <Button
                 BackgroundColor="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray600}}"
                 Clicked="OnArchiveClicked"

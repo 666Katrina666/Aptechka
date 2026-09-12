@@ -406,10 +406,11 @@ Re-run with -DeviceId <adb-id>. The script will not install or clear anything un
     ) -PassThru -WindowStyle Hidden -WorkingDirectory $AppiumRoot -RedirectStandardError $appiumErr
     Wait-AppiumReady ([uri]'http://127.0.0.1:4723/') 60
 
-    Write-Step 'Running canary E2E'
     $env:APTECHKA_E2E_APPIUM_URL = 'http://127.0.0.1:4723'
     $env:APTECHKA_E2E_DEVICE_ID = $DeviceId
     $env:APTECHKA_E2E_APK_PATH = $apkPath
+    $env:APTECHKA_E2E_ARTIFACT_DIR = $ArtifactDir
+    Write-Step 'Running E2E tests'
     & $dotnet test $TestProject --nologo --logger "trx;LogFileName=android-e2e.trx" --results-directory $ArtifactDir
     if ($LASTEXITCODE -ne 0) {
         throw "E2E tests failed with exit code $LASTEXITCODE."
@@ -427,5 +428,5 @@ if ($script:Failed) {
     exit 1
 }
 
-Write-Host "E2E canary passed on $DeviceId. Logs: $ArtifactDir"
+Write-Host "E2E tests passed on $DeviceId. Logs: $ArtifactDir"
 exit 0

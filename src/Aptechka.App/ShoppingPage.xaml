@@ -31,7 +31,7 @@
                             SelectionMode="Single">
                             <CollectionView.ItemTemplate>
                                 <DataTemplate x:DataType="viewModels:ShoppingRow">
-                                    <VerticalStackLayout Padding="4,10" Spacing="2">
+                                    <VerticalStackLayout AutomationId="Shopping.ActiveRow" Padding="4,10" Spacing="2">
                                         <Label
                                             FontAttributes="Bold"
                                             FontSize="18"
@@ -88,7 +88,7 @@
                             SelectionMode="Single">
                             <CollectionView.ItemTemplate>
                                 <DataTemplate x:DataType="viewModels:ShoppingRow">
-                                    <VerticalStackLayout Padding="4,10" Spacing="2">
+                                    <VerticalStackLayout AutomationId="Shopping.RecentRow" Padding="4,10" Spacing="2">
                                         <Label
                                             FontAttributes="Bold"
                                             FontSize="18"
@@ -135,7 +135,7 @@
                     SelectionMode="Single">
                     <CollectionView.ItemTemplate>
                         <DataTemplate x:DataType="viewModels:ShoppingCandidateRow">
-                            <VerticalStackLayout Padding="4,10" Spacing="2">
+                            <VerticalStackLayout AutomationId="Shopping.CandidateRow" Padding="4,10" Spacing="2">
                                 <Label
                                     FontAttributes="Bold"
                                     FontSize="18"

@@ -15,6 +15,15 @@ internal static class AutomationIds
     public const string ShoppingActiveEmpty = "Shopping.ActiveEmpty";
     public const string ShoppingRecentEmpty = "Shopping.RecentEmpty";
     public const string ShoppingCandidatesEmpty = "Shopping.CandidatesEmpty";
+    public const string ShoppingCandidateRow = "Shopping.CandidateRow";
+    public const string ShoppingActiveRow = "Shopping.ActiveRow";
+    public const string ShoppingRecentRow = "Shopping.RecentRow";
+    public const string ItemEditorPage = "ItemEditor.Page";
+    public const string ItemEditorName = "ItemEditor.Name";
+    public const string ItemEditorForm = "ItemEditor.Form";
+    public const string ItemEditorStrength = "ItemEditor.Strength";
+    public const string ItemEditorKeepInStock = "ItemEditor.KeepInStock";
+    public const string ItemEditorSave = "ItemEditor.Save";
 }
 
 internal static class E2ESettings
@@ -47,6 +56,23 @@ internal static class E2ESettings
                 "..", "..", "..", "..", "..",
                 "artifacts", "e2e", "android", "apk",
                 "io.github.vakineti.aptechka.e2e-Signed.apk"));
+        }
+    }
+
+    public static string ArtifactDir
+    {
+        get
+        {
+            var configured = Environment.GetEnvironmentVariable("APTECHKA_E2E_ARTIFACT_DIR");
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                return Path.GetFullPath(configured);
+            }
+
+            return Path.GetFullPath(Path.Combine(
+                AppContext.BaseDirectory,
+                "..", "..", "..", "..", "..",
+                "artifacts", "e2e", "android"));
         }
     }
 
