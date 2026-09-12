@@ -540,6 +540,24 @@ public sealed class SnapshotMergeResolutionTests
     }
 
     [Fact]
+    public void Merge_DoesNotApplyStaleConcurrentShoppingNoteResolution()
+    {
+        var empty = Snap(File(Manifest()));
+        var local = Snap(File(Manifest()), File(ShoppingItem.Create(ItemId, T1, true, "дом")));
+        var remote = Snap(File(Manifest()), File(ShoppingItem.Create(ItemId, T2, true, "аптека")));
+        var conflict = Assert.Single(Merge(empty, local, remote).Conflicts);
+        var staleLocal = Snap(File(Manifest()), File(ShoppingItem.Create(ItemId, T1, true, "другое")));
+
+        var result = Merge(empty, staleLocal, remote, Resolve(conflict, SyncConflictSide.Local));
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal("note", Assert.Single(result.Conflicts).Field);
+        Assert.DoesNotContain("дом", Assert.Single(result.Conflicts).Key, StringComparison.Ordinal);
+        Assert.DoesNotContain("другое", Assert.Single(result.Conflicts).Key, StringComparison.Ordinal);
+        Assert.DoesNotContain("аптека", Assert.Single(result.Conflicts).Key, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Merge_IgnoresResolutionForAConflictThatDisappeared()
     {
         var (conflict, @base, local, remote) = NameConflict();

@@ -577,18 +577,13 @@ public sealed class SnapshotMergeEngine
 
         if (@base is null)
         {
-            if (JsonEquals(path, localBytes, remoteBytes))
-            {
-                Accept(merged, path, localBytes);
-                return;
-            }
-
-            RecordFileConflict(
+            MergeConcurrentShopping(
                 path,
-                SyncConflictKind.FileChangedBoth,
-                null,
-                localBytes,
-                remoteBytes,
+                local!,
+                remote!,
+                localBytes!,
+                remoteBytes!,
+                mergedAt,
                 resolutions,
                 merged,
                 conflicts);
@@ -656,6 +651,79 @@ public sealed class SnapshotMergeEngine
             note);
         ValidateEntity(path, shoppingItem);
         Accept(merged, path, Serialize(shoppingItem));
+    }
+
+    private static void MergeConcurrentShopping(
+        string path,
+        ShoppingItem local,
+        ShoppingItem remote,
+        byte[] localBytes,
+        byte[] remoteBytes,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        if (JsonEquals(path, localBytes, remoteBytes))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        if (IsDeleted(local) != IsDeleted(remote))
+        {
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
+            return;
+        }
+
+        if (SnapshotMergeShopping.SameUserContent(local, remote))
+        {
+            var shoppingItem = SnapshotMergeShopping.WithConcurrentCreationMetadata(
+                local,
+                local,
+                remote,
+                mergedAt);
+            ValidateEntity(path, shoppingItem);
+            Accept(merged, path, Serialize(shoppingItem));
+            return;
+        }
+
+        var fieldConflicts = new List<SyncConflict>();
+        var isRequested = MergeCreatedScalar(
+            path,
+            "isRequested",
+            local.IsRequested,
+            remote.IsRequested,
+            resolutions,
+            fieldConflicts);
+        var note = MergeCreatedScalar(
+            path,
+            "note",
+            local.Note,
+            remote.Note,
+            resolutions,
+            fieldConflicts);
+        if (fieldConflicts.Count > 0)
+        {
+            conflicts.AddRange(fieldConflicts);
+            return;
+        }
+
+        var mergedItem = SnapshotMergeShopping.WithConcurrentCreationMetadata(
+            local with { IsRequested = isRequested, Note = note },
+            local,
+            remote,
+            mergedAt);
+        ValidateEntity(path, mergedItem);
+        Accept(merged, path, Serialize(mergedItem));
     }
 
     private static bool TryMergeFilePresence(
@@ -1063,6 +1131,36 @@ public sealed class SnapshotMergeEngine
         }
 
         var conflict = FieldConflict(path, field, SyncConflictKind.FieldChangedBoth, @base, local, remote);
+        if (resolutions.TryResolve(conflict, out var side))
+        {
+            return SnapshotMergeResolutions.Choose(side, local, remote);
+        }
+
+        conflicts.Add(conflict);
+        return local;
+    }
+
+    private static T MergeCreatedScalar<T>(
+        string path,
+        string field,
+        T local,
+        T remote,
+        SnapshotMergeResolutions resolutions,
+        List<SyncConflict> conflicts)
+    {
+        if (EqualityComparer<T>.Default.Equals(local, remote))
+        {
+            return local;
+        }
+
+        var conflict = new SyncConflict(
+            $"{path}|{field}|{SyncConflictKind.FieldChangedBoth}",
+            path,
+            field,
+            SyncConflictKind.FieldChangedBoth,
+            null,
+            ToJson(local),
+            ToJson(remote));
         if (resolutions.TryResolve(conflict, out var side))
         {
             return SnapshotMergeResolutions.Choose(side, local, remote);
