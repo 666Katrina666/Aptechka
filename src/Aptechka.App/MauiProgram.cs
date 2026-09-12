@@ -39,11 +39,14 @@ public static class MauiProgram
             services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<IProblemRepository>(services =>
             services.GetRequiredService<FileInventoryRepository>());
+        builder.Services.AddSingleton<IShoppingItemRepository>(services =>
+            services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<IDataSnapshotStore>(services =>
             services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<InventoryService>();
         builder.Services.AddSingleton<PackageService>();
         builder.Services.AddSingleton<ProblemService>();
+        builder.Services.AddSingleton<ShoppingService>();
         builder.Services.AddSingleton(new HttpClient
         {
             BaseAddress = new Uri("https://api.github.com/"),

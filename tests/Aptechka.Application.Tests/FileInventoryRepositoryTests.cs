@@ -391,6 +391,142 @@ public sealed class FileInventoryRepositoryTests : IDisposable
         Assert.Equal("Головная боль", Assert.Single(await repository.GetProblemsAsync()).Name);
     }
 
+    [Fact]
+    public async Task SaveShoppingItem_WritesEachRecordToItsOwnFile()
+    {
+        var repository = CreateRepository();
+        var shopping = CreateShopping(FirstId, true, "аптека");
+
+        await repository.SaveShoppingItemAsync(shopping);
+
+        var shoppingPath = Path.Combine(rootPath, "shopping", $"{FirstId}.json");
+        Assert.True(File.Exists(shoppingPath));
+        Assert.Empty(Directory.EnumerateFiles(rootPath, "*.tmp", SearchOption.AllDirectories));
+
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(shoppingPath));
+        Assert.Equal(FirstId, document.RootElement.GetProperty("id").GetString());
+        Assert.Equal(FirstId, document.RootElement.GetProperty("itemId").GetString());
+        Assert.True(document.RootElement.GetProperty("isRequested").GetBoolean());
+        Assert.Equal("аптека", document.RootElement.GetProperty("note").GetString());
+        Assert.False(document.RootElement.TryGetProperty("quantity", out _));
+        Assert.False(document.RootElement.TryGetProperty("price", out _));
+        Assert.False(document.RootElement.TryGetProperty("keepInStock", out _));
+
+        var loaded = Assert.Single(await repository.GetShoppingItemsAsync());
+        Assert.Equal(shopping.Id, loaded.Id);
+        Assert.Equal(shopping.ItemId, loaded.ItemId);
+        Assert.Equal(shopping.IsRequested, loaded.IsRequested);
+        Assert.Equal(shopping.Note, loaded.Note);
+    }
+
+    [Fact]
+    public async Task GetShoppingItems_TreatsMissingDirectoryAsEmpty()
+    {
+        Assert.Empty(await CreateRepository().GetShoppingItemsAsync());
+        Assert.False(Directory.Exists(Path.Combine(rootPath, "shopping")));
+    }
+
+    [Fact]
+    public async Task ReadAsync_KeepsShoppingTombstoneInSnapshot()
+    {
+        var repository = CreateRepository();
+        var shopping = CreateShopping(FirstId, true, null);
+        await repository.SaveShoppingItemAsync(shopping);
+        await repository.SaveShoppingItemAsync(shopping.Delete(Now.AddMinutes(3)));
+
+        var snapshot = await repository.ReadAsync();
+        var relativePath = $"shopping/{FirstId}.json";
+        Assert.True(snapshot.Files.ContainsKey(relativePath));
+        using var document = JsonDocument.Parse(Encoding.UTF8.GetString(snapshot.Files[relativePath]));
+        Assert.Equal(2, document.RootElement.GetProperty("revision").GetInt32());
+        Assert.NotEqual(JsonValueKind.Null, document.RootElement.GetProperty("deletedAt").ValueKind);
+        Assert.True(File.Exists(Path.Combine(rootPath, "shopping", $"{FirstId}.json")));
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_AcceptsP5SnapshotWithoutShopping()
+    {
+        var repository = CreateRepository();
+
+        await repository.ReplaceAsync(Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)),
+            ($"packages/{FirstPackageId}.json", PackageJson(FirstPackageId, FirstId, deleted: false)),
+            ($"problems/{ProblemId}.json", ProblemJson(ProblemId, "Головная боль", FirstId, deleted: false))));
+
+        Assert.Equal("Ибупрофен", Assert.Single(await repository.GetItemsAsync()).Name);
+        Assert.Single(await repository.GetPackagesAsync());
+        Assert.Equal("Головная боль", Assert.Single(await repository.GetProblemsAsync()).Name);
+        Assert.Empty(await repository.GetShoppingItemsAsync());
+        Assert.False(Directory.Exists(Path.Combine(rootPath, "shopping")));
+    }
+
+    [Fact]
+    public async Task ReplaceAsync_RejectsShoppingWhenFileNameIdOrItemIdDiffer()
+    {
+        var repository = CreateRepository();
+
+        var fileName = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.ReplaceAsync(Snapshot(
+                ("aptechka.json", ManifestJson),
+                ($"shopping/{SecondId}.json", ShoppingJson(FirstId, FirstId, requested: true, deleted: false)))));
+        var itemId = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.ReplaceAsync(Snapshot(
+                ("aptechka.json", ManifestJson),
+                ($"shopping/{FirstId}.json", ShoppingJson(FirstId, SecondId, requested: true, deleted: false)))));
+
+        Assert.Contains("покупки", fileName.Message, StringComparison.Ordinal);
+        Assert.IsType<InvalidDataException>(itemId);
+        Assert.DoesNotContain("секретная заметка", itemId.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TryReplaceAsync_DoesNotLoseItemsPackagesProblemsOrShopping()
+    {
+        var repository = CreateRepository();
+        var original = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Ибупрофен", deleted: false)),
+            ($"packages/{FirstPackageId}.json", PackageJson(FirstPackageId, FirstId, deleted: false)),
+            ($"problems/{ProblemId}.json", ProblemJson(ProblemId, "Головная боль", FirstId, deleted: false)),
+            ($"shopping/{FirstId}.json", ShoppingJson(FirstId, FirstId, requested: true, deleted: false)));
+        var replacement = Snapshot(
+            ("aptechka.json", ManifestJson),
+            ($"items/{FirstId}.json", ItemJson(FirstId, "Нурофен", deleted: false)),
+            ($"packages/{FirstPackageId}.json", PackageJson(FirstPackageId, FirstId, deleted: false)),
+            ($"problems/{ProblemId}.json", ProblemJson(ProblemId, "Головная боль", FirstId, deleted: false)),
+            ($"shopping/{FirstId}.json", ShoppingJson(FirstId, FirstId, requested: false, deleted: false)));
+        await repository.ReplaceAsync(original);
+
+        Assert.True(await repository.TryReplaceAsync(original, replacement));
+        var loaded = await repository.ReadAsync();
+        Assert.True(loaded.HasSameFiles(replacement));
+        Assert.True(loaded.Files.ContainsKey($"items/{FirstId}.json"));
+        Assert.True(loaded.Files.ContainsKey($"packages/{FirstPackageId}.json"));
+        Assert.True(loaded.Files.ContainsKey($"problems/{ProblemId}.json"));
+        Assert.True(loaded.Files.ContainsKey($"shopping/{FirstId}.json"));
+        Assert.False(Assert.Single(await repository.GetShoppingItemsAsync()).IsRequested);
+    }
+
+    [Theory]
+    [InlineData("mismatched-itemId")]
+    [InlineData("untrimmed-note")]
+    [InlineData("blank-note")]
+    [InlineData("invalid-id")]
+    public async Task ReplaceAsync_ClassifiesMalformedShoppingAsInvalidData(string kind)
+    {
+        var repository = CreateRepository();
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            repository.ReplaceAsync(Snapshot(
+                ("aptechka.json", ManifestJson),
+                ($"shopping/{FirstId}.json", MalformedShoppingJson(kind)))));
+
+        Assert.IsType<InvalidDataException>(exception);
+        Assert.IsNotType<InvalidOperationException>(exception);
+        Assert.DoesNotContain("секретная заметка", exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("missing-aliases")]
     [InlineData("null-aliases")]
@@ -480,6 +616,9 @@ public sealed class FileInventoryRepositoryTests : IDisposable
     private static Problem CreateProblem(string id, string name, IReadOnlyList<string> itemIds, string? note) =>
         Problem.Create(id, Now, name, ["болит голова"], itemIds, note);
 
+    private static ShoppingItem CreateShopping(string itemId, bool isRequested, string? note) =>
+        ShoppingItem.Create(itemId, Now, isRequested, note);
+
     private static DataSnapshot Snapshot(params (string Path, string Content)[] files) => new(
         files.ToDictionary(
             static file => file.Path,
@@ -548,6 +687,32 @@ public sealed class FileInventoryRepositoryTests : IDisposable
           "note": null
         }
         """;
+
+    private static string ShoppingJson(string id, string itemId, bool requested, bool deleted) =>
+        $$"""
+        {
+          "id": "{{id}}",
+          "revision": 1,
+          "createdAt": "2026-08-31T18:35:00+00:00",
+          "updatedAt": "2026-08-31T18:35:00+00:00",
+          "deletedAt": {{(deleted ? "\"2026-08-31T19:00:00+00:00\"" : "null")}},
+          "itemId": "{{itemId}}",
+          "isRequested": {{(requested ? "true" : "false")}},
+          "note": null
+        }
+        """;
+
+    private static string MalformedShoppingJson(string kind) => kind switch
+    {
+        "mismatched-itemId" => ShoppingJson(FirstId, SecondId, requested: true, deleted: false)
+            .Replace("\"note\": null", "\"note\": \"секретная заметка\"", StringComparison.Ordinal),
+        "untrimmed-note" => ShoppingJson(FirstId, FirstId, requested: true, deleted: false)
+            .Replace("\"note\": null", "\"note\": \" секретная заметка \"", StringComparison.Ordinal),
+        "blank-note" => ShoppingJson(FirstId, FirstId, requested: true, deleted: false)
+            .Replace("\"note\": null", "\"note\": \"   \"", StringComparison.Ordinal),
+        "invalid-id" => ShoppingJson("not-a-ulid", "not-a-ulid", requested: true, deleted: false),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+    };
 
     private static string MalformedProblemJson(string kind) => kind switch
     {

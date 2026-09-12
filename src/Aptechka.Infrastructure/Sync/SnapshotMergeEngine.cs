@@ -98,6 +98,12 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
+        if (IsEntityPath(path, SnapshotMergeShopping.PathPrefix, out _))
+        {
+            MergeShopping(path, baseBytes, localBytes, remoteBytes, mergedAt, resolutions, merged, conflicts);
+            return;
+        }
+
         if (localBytes is null && remoteBytes is null)
         {
             return;
@@ -118,7 +124,8 @@ public sealed class SnapshotMergeEngine
 
         if (path.StartsWith("items/", StringComparison.Ordinal) ||
             path.StartsWith("packages/", StringComparison.Ordinal) ||
-            path.StartsWith(SnapshotMergeProblems.PathPrefix, StringComparison.Ordinal))
+            path.StartsWith(SnapshotMergeProblems.PathPrefix, StringComparison.Ordinal) ||
+            path.StartsWith(SnapshotMergeShopping.PathPrefix, StringComparison.Ordinal))
         {
             throw new InvalidDataException($"Путь не соответствует сущности: {path}");
         }
@@ -545,6 +552,112 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(problem));
     }
 
+    private static void MergeShopping(
+        string path,
+        byte[]? baseBytes,
+        byte[]? localBytes,
+        byte[]? remoteBytes,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var @base = ReadShopping(path, baseBytes);
+        var local = ReadShopping(path, localBytes);
+        var remote = ReadShopping(path, remoteBytes);
+        if (@base is not null)
+        {
+            SnapshotMergeIdentities.EnsureShoppingIdentityImmutable(path, @base, local, remote);
+        }
+
+        if (TryMergeFilePresence(path, baseBytes, localBytes, remoteBytes, resolutions, merged, conflicts))
+        {
+            return;
+        }
+
+        if (@base is null)
+        {
+            if (JsonEquals(path, localBytes, remoteBytes))
+            {
+                Accept(merged, path, localBytes);
+                return;
+            }
+
+            RecordFileConflict(
+                path,
+                SyncConflictKind.FileChangedBoth,
+                null,
+                localBytes,
+                remoteBytes,
+                resolutions,
+                merged,
+                conflicts);
+            return;
+        }
+
+        if (SnapshotMergeShopping.UsersEqual(local!, remote!))
+        {
+            AcceptShopping(merged, path, @base, local!, remote!, localBytes!, mergedAt);
+            return;
+        }
+
+        if (SnapshotMergeShopping.UsersEqual(local!, @base))
+        {
+            Accept(merged, path, remoteBytes);
+            return;
+        }
+
+        if (SnapshotMergeShopping.UsersEqual(remote!, @base))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        if (IsDeleted(local!) != IsDeleted(remote!))
+        {
+            RecordDeleteVsModify(
+                path,
+                @base,
+                local!,
+                remote!,
+                mergedAt,
+                resolutions,
+                merged,
+                conflicts);
+            return;
+        }
+
+        var fieldConflicts = new List<SyncConflict>();
+        var isRequested = MergeScalar(
+            path,
+            "isRequested",
+            @base.IsRequested,
+            local!.IsRequested,
+            remote!.IsRequested,
+            resolutions,
+            fieldConflicts);
+        var note = MergeScalar(path, "note", @base.Note, local.Note, remote.Note, resolutions, fieldConflicts);
+        var deletedAt = MergeDeletedAt(@base, local, remote);
+
+        if (fieldConflicts.Count > 0)
+        {
+            conflicts.AddRange(fieldConflicts);
+            return;
+        }
+
+        var shoppingItem = new ShoppingItem(
+            local.Id,
+            Math.Max(local.Revision, remote.Revision) + 1,
+            Earlier(@base.CreatedAt, local.CreatedAt, remote.CreatedAt),
+            mergedAt,
+            deletedAt,
+            local.ItemId,
+            isRequested,
+            note);
+        ValidateEntity(path, shoppingItem);
+        Accept(merged, path, Serialize(shoppingItem));
+    }
+
     private static bool TryMergeFilePresence(
         string path,
         byte[]? baseBytes,
@@ -741,6 +854,32 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(problem));
     }
 
+    private static void AcceptShopping(
+        Dictionary<string, byte[]> merged,
+        string path,
+        ShoppingItem @base,
+        ShoppingItem local,
+        ShoppingItem remote,
+        byte[] localBytes,
+        DateTimeOffset mergedAt)
+    {
+        if (SnapshotMergeShopping.UsersEqual(local, @base))
+        {
+            Accept(merged, path, localBytes);
+            return;
+        }
+
+        var shoppingItem = SnapshotMergeShopping.WithMergedMetadata(
+            local,
+            @base,
+            local,
+            remote,
+            mergedAt,
+            MergeDeletedAt(@base, local, remote));
+        ValidateEntity(path, shoppingItem);
+        Accept(merged, path, Serialize(shoppingItem));
+    }
+
     private static void RecordFileConflict(
         string path,
         SyncConflictKind kind,
@@ -864,6 +1003,41 @@ public sealed class SnapshotMergeEngine
         Accept(merged, path, Serialize(problem));
     }
 
+    private static void RecordDeleteVsModify(
+        string path,
+        ShoppingItem @base,
+        ShoppingItem local,
+        ShoppingItem remote,
+        DateTimeOffset mergedAt,
+        SnapshotMergeResolutions resolutions,
+        Dictionary<string, byte[]> merged,
+        List<SyncConflict> conflicts)
+    {
+        var conflict = FieldConflict(
+            path,
+            "deletedAt",
+            SyncConflictKind.DeleteVsModify,
+            @base,
+            local,
+            remote);
+        if (!resolutions.TryResolve(conflict, out var side))
+        {
+            conflicts.Add(conflict);
+            return;
+        }
+
+        var chosen = SnapshotMergeResolutions.Choose(side, local, remote);
+        var shoppingItem = SnapshotMergeShopping.WithMergedMetadata(
+            chosen,
+            @base,
+            local,
+            remote,
+            mergedAt,
+            chosen.DeletedAt);
+        ValidateEntity(path, shoppingItem);
+        Accept(merged, path, Serialize(shoppingItem));
+    }
+
     private static T MergeScalar<T>(
         string path,
         string field,
@@ -905,6 +1079,9 @@ public sealed class SnapshotMergeEngine
         MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
 
     private static DateTimeOffset? MergeDeletedAt(Problem @base, Problem local, Problem remote) =>
+        MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
+
+    private static DateTimeOffset? MergeDeletedAt(ShoppingItem @base, ShoppingItem local, ShoppingItem remote) =>
         MergeDeletedAt(@base.DeletedAt, local.DeletedAt, remote.DeletedAt);
 
     private static DateTimeOffset? MergeDeletedAt(
@@ -1027,6 +1204,8 @@ public sealed class SnapshotMergeEngine
 
     private static bool IsDeleted(Problem problem) => problem.DeletedAt is not null;
 
+    private static bool IsDeleted(ShoppingItem shoppingItem) => shoppingItem.DeletedAt is not null;
+
     private static Expiration ExpirationOf(Package package) =>
         new(package.ExpirationDate, package.ExpirationPrecision);
 
@@ -1081,6 +1260,12 @@ public sealed class SnapshotMergeEngine
             return;
         }
 
+        if (IsEntityPath(path, SnapshotMergeShopping.PathPrefix, out _))
+        {
+            ReadShopping(path, content);
+            return;
+        }
+
         ParseJson(path, content);
     }
 
@@ -1123,6 +1308,18 @@ public sealed class SnapshotMergeEngine
         ReadEntity<Problem>(path, bytes, static (entity, id, entityPath) =>
         {
             if (!string.Equals(entity.Id, id, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException($"Идентификатор в JSON не совпадает с путём: {entityPath}");
+            }
+
+            entity.EnsureValid();
+        });
+
+    private static ShoppingItem? ReadShopping(string path, byte[]? bytes) =>
+        ReadEntity<ShoppingItem>(path, bytes, static (entity, id, entityPath) =>
+        {
+            if (!string.Equals(entity.Id, id, StringComparison.Ordinal) ||
+                !string.Equals(entity.ItemId, id, StringComparison.Ordinal))
             {
                 throw new InvalidDataException($"Идентификатор в JSON не совпадает с путём: {entityPath}");
             }
@@ -1185,6 +1382,11 @@ public sealed class SnapshotMergeEngine
             return SnapshotMergeProblems.PathPrefix;
         }
 
+        if (typeof(T) == typeof(ShoppingItem))
+        {
+            return SnapshotMergeShopping.PathPrefix;
+        }
+
         throw new InvalidOperationException(typeof(T).Name);
     }
 
@@ -1230,6 +1432,18 @@ public sealed class SnapshotMergeEngine
         try
         {
             problem.EnsureValid();
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException($"Нарушены инварианты данных: {path}", exception);
+        }
+    }
+
+    private static void ValidateEntity(string path, ShoppingItem shoppingItem)
+    {
+        try
+        {
+            shoppingItem.EnsureValid();
         }
         catch (InvalidOperationException exception)
         {

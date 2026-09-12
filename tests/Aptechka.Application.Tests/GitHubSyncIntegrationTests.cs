@@ -170,6 +170,44 @@ public sealed class GitHubSyncIntegrationTests
         Assert.True(snapshot.Files.ContainsKey($"items/{item.Id}.json"));
     }
 
+    [GitHubIntegrationFact]
+    [Trait("Category", "Integration")]
+    public async Task RoundTrip_PushesThenPullsOneShoppingItem()
+    {
+        await using var session = await IsolatedBranch.CreateAsync();
+        await using var first = CreateContext();
+        await session.SyncAsync(first, "integration-shopping-first");
+        var item = await first.InventoryService.CreateAsync(new InventoryItemDraft(
+            $"P6A shopping item {Guid.NewGuid():N}",
+            [],
+            InventoryItemCategory.MedicalSupply,
+            [],
+            null,
+            null,
+            "Temporary shopping roundtrip",
+            false));
+        var created = await first.ShoppingService.RequestPurchaseAsync(item.Id, "аптека");
+
+        var pushed = await session.SyncAsync(first, "integration-shopping-first");
+        Assert.Equal(SyncOutcome.Pushed, pushed.Outcome);
+        Assert.True((await first.Repository.ReadAsync()).Files.ContainsKey($"shopping/{created.ItemId}.json"));
+
+        await using var second = CreateContext();
+        var pulled = await session.SyncAsync(second, "integration-shopping-second");
+        var loaded = await second.ShoppingService.GetByItemIdAsync(item.Id);
+        var snapshot = await second.Repository.ReadAsync();
+
+        Assert.Equal(SyncOutcome.Pulled, pulled.Outcome);
+        Assert.NotNull(loaded);
+        Assert.Null(loaded.DeletedAt);
+        Assert.Equal(item.Id, loaded.Id);
+        Assert.Equal(item.Id, loaded.ItemId);
+        Assert.True(loaded.IsRequested);
+        Assert.Equal("аптека", loaded.Note);
+        Assert.True(snapshot.Files.ContainsKey($"shopping/{item.Id}.json"));
+        Assert.True(snapshot.Files.ContainsKey($"items/{item.Id}.json"));
+    }
+
     private static IntegrationContext CreateContext()
     {
         var root = Path.Combine(Path.GetTempPath(), "aptechka-integration", Guid.NewGuid().ToString("N"));
@@ -195,6 +233,7 @@ public sealed class GitHubSyncIntegrationTests
             new InventoryService(repository, repository, clock, idGenerator),
             new PackageService(repository, repository, clock, idGenerator),
             new ProblemService(repository, clock, idGenerator),
+            new ShoppingService(repository, repository, clock),
             syncService);
     }
 
@@ -402,12 +441,14 @@ public sealed class GitHubSyncIntegrationTests
         InventoryService inventoryService,
         PackageService packageService,
         ProblemService problemService,
+        ShoppingService shoppingService,
         GitHubSyncService syncService) : IAsyncDisposable
     {
         public FileInventoryRepository Repository { get; } = repository;
         public InventoryService InventoryService { get; } = inventoryService;
         public PackageService PackageService { get; } = packageService;
         public ProblemService ProblemService { get; } = problemService;
+        public ShoppingService ShoppingService { get; } = shoppingService;
         public GitHubSyncService SyncService { get; } = syncService;
 
         public ValueTask DisposeAsync()

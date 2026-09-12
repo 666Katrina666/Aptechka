@@ -864,6 +864,160 @@ public sealed class SnapshotMergeEngineTests
         Assert.True(merged.MergedSnapshot.Files.ContainsKey(ProblemPath(ProblemId)));
     }
 
+    [Fact]
+    public void Merge_MergesIndependentShoppingScalars()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var local = shopping.Update(T1, true, null);
+        var remote = shopping.Update(T2, false, "аптека");
+
+        var merged = ReadShopping(
+            Merge(
+                Snap(File(Manifest()), File(shopping)),
+                Snap(File(Manifest()), File(local)),
+                Snap(File(Manifest()), File(remote))),
+            ItemId);
+
+        Assert.True(merged.IsRequested);
+        Assert.Equal("аптека", merged.Note);
+        Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+        Assert.Equal(T0, merged.CreatedAt);
+        Assert.Equal(ItemId, merged.Id);
+        Assert.Equal(ItemId, merged.ItemId);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenTheSameShoppingScalarChangesDifferently()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var local = shopping.Update(T1, true, "дом");
+        var remote = shopping.Update(T2, true, "аптека");
+
+        var result = Merge(
+            Snap(File(Manifest()), File(shopping)),
+            Snap(File(Manifest()), File(local)),
+            Snap(File(Manifest()), File(remote)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal(SyncConflictKind.FieldChangedBoth, conflict.Kind);
+        Assert.Equal("note", conflict.Field);
+        Assert.Equal(ShoppingPath(ItemId), conflict.Path);
+    }
+
+    [Fact]
+    public void Merge_AcceptsIdenticalShoppingChangeOnBothSides()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var local = shopping.Update(T1, true, "аптека");
+        var remote = shopping.Update(T2, true, "аптека");
+
+        var merged = ReadShopping(
+            Merge(
+                Snap(File(Manifest()), File(shopping)),
+                Snap(File(Manifest()), File(local)),
+                Snap(File(Manifest()), File(remote))),
+            ItemId);
+
+        Assert.True(merged.IsRequested);
+        Assert.Equal("аптека", merged.Note);
+        Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+    }
+
+    [Fact]
+    public void Merge_ThrowsWhenShoppingIdOrItemIdChange()
+    {
+        var shopping = Shopping(ItemId, true, "секретная заметка");
+        var changedItemId = shopping with { ItemId = SecondItemId, Revision = 2, UpdatedAt = T1 };
+        var changedId = shopping with { Id = SecondItemId, ItemId = SecondItemId, Revision = 2, UpdatedAt = T1 };
+
+        var itemId = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(shopping)),
+                Snap(File(Manifest()), (ShoppingPath(ItemId), Bytes(changedItemId))),
+                Snap(File(Manifest()), File(shopping))));
+        var identity = Assert.Throws<InvalidDataException>(() =>
+            Merge(
+                Snap(File(Manifest()), File(shopping)),
+                Snap(File(Manifest()), (ShoppingPath(ItemId), Bytes(changedId))),
+                Snap(File(Manifest()), File(shopping))));
+
+        Assert.Contains(ShoppingPath(ItemId), itemId.Message, StringComparison.Ordinal);
+        Assert.Contains(ShoppingPath(ItemId), identity.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("секретная заметка", itemId.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("секретная заметка", identity.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(SecondItemId, itemId.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_ConflictsWhenShoppingTombstoneCompetesWithAUserChange()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var tombstone = shopping.Delete(T1);
+        var remote = shopping.Update(T2, true, "аптека");
+
+        var result = Merge(
+            Snap(File(Manifest()), File(shopping)),
+            Snap(File(Manifest()), File(tombstone)),
+            Snap(File(Manifest()), File(remote)));
+
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, conflict.Kind);
+        Assert.Equal("deletedAt", conflict.Field);
+        Assert.DoesNotContain("аптека", conflict.Path, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Merge_MergesShoppingTombstonesFromBothSides()
+    {
+        var shopping = Shopping(ItemId, true, "аптека");
+        var local = shopping.Delete(T1);
+        var remote = shopping.Delete(T2);
+
+        var merged = ReadShopping(
+            Merge(
+                Snap(File(Manifest()), File(shopping)),
+                Snap(File(Manifest()), File(local)),
+                Snap(File(Manifest()), File(remote))),
+            ItemId);
+
+        Assert.Equal(T1, merged.DeletedAt);
+        Assert.Equal(3, merged.Revision);
+        Assert.Equal(MergedAt, merged.UpdatedAt);
+        Assert.True(merged.IsRequested);
+    }
+
+    [Fact]
+    public void Merge_KeepsItemsPackagesProblemsAndShoppingTogether()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var problem = Problem(ProblemId, "Головная боль");
+        var shopping = Shopping(ItemId, false, null);
+        var localItem = item.Update(T1, "Нурофен", item.Aliases, item.Category, item.ActiveIngredients, item.Form, item.Strength, item.Description, item.KeepInStock);
+        var remotePackage = package.Update(T2, "блистер", package.ExpirationDate, package.ExpirationPrecision, package.OpenedDate, package.ShelfLifeAfterOpeningDays, package.StockState, package.Note);
+        var remoteProblem = problem.Update(T2, problem.Name, ["болит голова"], [ItemId], problem.Note);
+        var remoteShopping = shopping.Update(T2, true, "аптека");
+
+        var merged = Merge(
+            Snap(File(Manifest()), File(item), File(package), File(problem), File(shopping)),
+            Snap(File(Manifest()), File(localItem), File(package), File(problem), File(shopping)),
+            Snap(File(Manifest()), File(item), File(remotePackage), File(remoteProblem), File(remoteShopping)));
+
+        Assert.False(merged.HasConflicts);
+        Assert.Equal("Нурофен", ReadItem(merged, ItemId).Name);
+        Assert.Equal("блистер", ReadPackage(merged, PackageId).Label);
+        Assert.Equal(["болит голова"], ReadProblem(merged, ProblemId).Aliases);
+        Assert.True(ReadShopping(merged, ItemId).IsRequested);
+        Assert.Equal("аптека", ReadShopping(merged, ItemId).Note);
+        Assert.True(merged.MergedSnapshot!.Files.ContainsKey(ItemPath(ItemId)));
+        Assert.True(merged.MergedSnapshot.Files.ContainsKey(PackagePath(PackageId)));
+        Assert.True(merged.MergedSnapshot.Files.ContainsKey(ProblemPath(ProblemId)));
+        Assert.True(merged.MergedSnapshot.Files.ContainsKey(ShoppingPath(ItemId)));
+    }
+
     private SnapshotMergeResult Merge(DataSnapshot @base, DataSnapshot local, DataSnapshot remote) =>
         engine.Merge(@base, local, remote, MergedAt);
 
@@ -891,6 +1045,15 @@ public sealed class SnapshotMergeEngineTests
         Assert.NotNull(result.MergedSnapshot);
         return JsonSerializer.Deserialize<Problem>(
             result.MergedSnapshot.Files[ProblemPath(id)],
+            AptechkaJson.Options)!;
+    }
+
+    private static ShoppingItem ReadShopping(SnapshotMergeResult result, string id)
+    {
+        Assert.False(result.HasConflicts);
+        Assert.NotNull(result.MergedSnapshot);
+        return JsonSerializer.Deserialize<ShoppingItem>(
+            result.MergedSnapshot.Files[ShoppingPath(id)],
             AptechkaJson.Options)!;
     }
 
@@ -926,6 +1089,9 @@ public sealed class SnapshotMergeEngineTests
     private static Problem Problem(string id, string name) =>
         Domain.Inventory.Problem.Create(id, T0, name, [], [], null);
 
+    private static ShoppingItem Shopping(string itemId, bool isRequested, string? note) =>
+        ShoppingItem.Create(itemId, T0, isRequested, note);
+
     private static DatasetManifest Manifest() =>
         new(DatasetManifest.CurrentSchemaVersion, DatasetId, T0);
 
@@ -938,6 +1104,8 @@ public sealed class SnapshotMergeEngineTests
 
     private static (string Path, byte[] Content) File(Problem problem) => (ProblemPath(problem.Id), Bytes(problem));
 
+    private static (string Path, byte[] Content) File(ShoppingItem shopping) => (ShoppingPath(shopping.ItemId), Bytes(shopping));
+
     private static (string Path, byte[] Content) File(DatasetManifest manifest) => ("aptechka.json", Bytes(manifest));
 
     private static byte[] Bytes<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, AptechkaJson.Options);
@@ -947,6 +1115,8 @@ public sealed class SnapshotMergeEngineTests
     private static string PackagePath(string id) => $"packages/{id}.json";
 
     private static string ProblemPath(string id) => $"problems/{id}.json";
+
+    private static string ShoppingPath(string id) => $"shopping/{id}.json";
 
     private static string MalformedProblemJson(string kind) => kind switch
     {

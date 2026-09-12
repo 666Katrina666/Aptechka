@@ -477,6 +477,69 @@ public sealed class SnapshotMergeResolutionTests
     }
 
     [Fact]
+    public void Merge_ChoosesLocalShoppingScalar()
+    {
+        var (conflict, @base, local, remote) = ShoppingNoteConflict();
+
+        var result = Merge(@base, local, remote, Resolve(conflict, SyncConflictSide.Local));
+
+        Assert.False(result.HasConflicts);
+        Assert.Equal("дом", ReadShopping(result, ItemId).Note);
+        Assert.True(ReadShopping(result, ItemId).IsRequested);
+        Assert.Equal(3, ReadShopping(result, ItemId).Revision);
+        Assert.Equal(MergedAt, ReadShopping(result, ItemId).UpdatedAt);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStaleShoppingLocalValue()
+    {
+        var (conflict, @base, local, remote) = ShoppingNoteConflict();
+        var staleLocal = Snap(File(Manifest()), File(Shopping(ItemId, true, "другое")));
+
+        var result = Merge(@base, staleLocal, remote, Resolve(conflict, SyncConflictSide.Local));
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal("note", Assert.Single(result.Conflicts).Field);
+    }
+
+    [Fact]
+    public void Merge_ShoppingDeleteVsModifyResolvesWhenEntitiesAreUnchanged()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var tombstone = shopping.Delete(T1);
+        var modified = shopping.Update(T2, true, "аптека");
+        var @base = Snap(File(Manifest()), File(shopping));
+        var local = Snap(File(Manifest()), File(tombstone));
+        var remote = Snap(File(Manifest()), File(modified));
+        var conflict = Assert.Single(Merge(@base, local, remote).Conflicts);
+
+        var result = Merge(@base, local, remote, Resolve(conflict, SyncConflictSide.Local));
+
+        Assert.False(result.HasConflicts);
+        Assert.Equal(T1, ReadShopping(result, ItemId).DeletedAt);
+        Assert.False(ReadShopping(result, ItemId).IsRequested);
+    }
+
+    [Fact]
+    public void Merge_DoesNotApplyStaleShoppingDeleteVsModifyWhenNoteChanges()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var tombstone = shopping.Delete(T1);
+        var modified = shopping.Update(T2, true, "аптека");
+        var changed = modified.Update(T2.AddMinutes(1), true, "дом");
+        var @base = Snap(File(Manifest()), File(shopping));
+        var local = Snap(File(Manifest()), File(tombstone));
+        var shown = Snap(File(Manifest()), File(modified));
+        var current = Snap(File(Manifest()), File(changed));
+        var conflict = Assert.Single(Merge(@base, local, shown).Conflicts);
+
+        var result = Merge(@base, local, current, Resolve(conflict, SyncConflictSide.Remote));
+
+        Assert.Null(result.MergedSnapshot);
+        Assert.Equal(SyncConflictKind.DeleteVsModify, Assert.Single(result.Conflicts).Kind);
+    }
+
+    [Fact]
     public void Merge_IgnoresResolutionForAConflictThatDisappeared()
     {
         var (conflict, @base, local, remote) = NameConflict();
@@ -507,6 +570,17 @@ public sealed class SnapshotMergeResolutionTests
         var @base = Snap(File(Manifest()), File(problem));
         var local = Snap(File(Manifest()), File(localProblem));
         var remote = Snap(File(Manifest()), File(remoteProblem));
+        return (Assert.Single(Merge(@base, local, remote).Conflicts), @base, local, remote);
+    }
+
+    private (SyncConflict Conflict, DataSnapshot Base, DataSnapshot Local, DataSnapshot Remote) ShoppingNoteConflict()
+    {
+        var shopping = Shopping(ItemId, false, null);
+        var localShopping = shopping.Update(T1, true, "дом");
+        var remoteShopping = shopping.Update(T2, true, "аптека");
+        var @base = Snap(File(Manifest()), File(shopping));
+        var local = Snap(File(Manifest()), File(localShopping));
+        var remote = Snap(File(Manifest()), File(remoteShopping));
         return (Assert.Single(Merge(@base, local, remote).Conflicts), @base, local, remote);
     }
 
@@ -544,6 +618,15 @@ public sealed class SnapshotMergeResolutionTests
         Assert.NotNull(result.MergedSnapshot);
         return JsonSerializer.Deserialize<Problem>(
             result.MergedSnapshot.Files[ProblemPath(id)],
+            AptechkaJson.Options)!;
+    }
+
+    private static ShoppingItem ReadShopping(SnapshotMergeResult result, string id)
+    {
+        Assert.False(result.HasConflicts);
+        Assert.NotNull(result.MergedSnapshot);
+        return JsonSerializer.Deserialize<ShoppingItem>(
+            result.MergedSnapshot.Files[ShoppingPath(id)],
             AptechkaJson.Options)!;
     }
 
@@ -588,6 +671,9 @@ public sealed class SnapshotMergeResolutionTests
     private static Problem Problem(string id, string name) =>
         Domain.Inventory.Problem.Create(id, T0, name, [], [], null);
 
+    private static ShoppingItem Shopping(string itemId, bool isRequested, string? note) =>
+        ShoppingItem.Create(itemId, T0, isRequested, note);
+
     private static Package WithNote(Package package, string? note, DateTimeOffset at) =>
         package.Update(
             at,
@@ -622,6 +708,8 @@ public sealed class SnapshotMergeResolutionTests
 
     private static (string Path, byte[] Content) File(Problem problem) => (ProblemPath(problem.Id), Bytes(problem));
 
+    private static (string Path, byte[] Content) File(ShoppingItem shopping) => (ShoppingPath(shopping.ItemId), Bytes(shopping));
+
     private static (string Path, byte[] Content) File(DatasetManifest manifest) => ("aptechka.json", Bytes(manifest));
 
     private static byte[] Bytes<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(value, AptechkaJson.Options);
@@ -631,4 +719,6 @@ public sealed class SnapshotMergeResolutionTests
     private static string PackagePath(string id) => $"packages/{id}.json";
 
     private static string ProblemPath(string id) => $"problems/{id}.json";
+
+    private static string ShoppingPath(string id) => $"shopping/{id}.json";
 }

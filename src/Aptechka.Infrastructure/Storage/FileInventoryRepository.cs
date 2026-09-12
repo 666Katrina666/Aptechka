@@ -9,13 +9,14 @@ namespace Aptechka.Infrastructure.Storage;
 public sealed class FileInventoryRepository(
     string rootPath,
     IClock clock,
-    IIdGenerator idGenerator) : IInventoryRepository, IPackageRepository, IProblemRepository, IDataSnapshotStore
+    IIdGenerator idGenerator) : IInventoryRepository, IPackageRepository, IProblemRepository, IShoppingItemRepository, IDataSnapshotStore
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string manifestPath = Path.Combine(rootPath, "aptechka.json");
     private readonly string itemsPath = Path.Combine(rootPath, "items");
     private readonly string packagesPath = Path.Combine(rootPath, "packages");
     private readonly string problemsPath = Path.Combine(rootPath, "problems");
+    private readonly string shoppingPath = Path.Combine(rootPath, "shopping");
 
     public async Task<IReadOnlyList<InventoryItem>> GetItemsAsync(
         CancellationToken cancellationToken = default)
@@ -155,6 +156,53 @@ public sealed class FileInventoryRepository(
 
             var problemPath = Path.Combine(problemsPath, $"{problem.Id}.json");
             await WriteJsonAtomicallyAsync(problemPath, problem, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<ShoppingItem>> GetShoppingItemsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!Directory.Exists(shoppingPath))
+            {
+                return [];
+            }
+
+            var records = new List<ShoppingItem>();
+            foreach (var path in Directory.EnumerateFiles(shoppingPath, "*.json"))
+            {
+                records.Add(await ReadShoppingJsonAsync(path, cancellationToken));
+            }
+
+            return records.OrderBy(static record => record.CreatedAt).ToArray();
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task SaveShoppingItemAsync(
+        ShoppingItem shoppingItem,
+        CancellationToken cancellationToken = default)
+    {
+        shoppingItem.EnsureValid();
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            Directory.CreateDirectory(rootPath);
+            Directory.CreateDirectory(shoppingPath);
+            await EnsureManifestAsync(cancellationToken);
+
+            var recordPath = Path.Combine(shoppingPath, $"{shoppingItem.ItemId}.json");
+            await WriteJsonAtomicallyAsync(recordPath, shoppingItem, cancellationToken);
         }
         finally
         {
@@ -391,15 +439,26 @@ public sealed class FileInventoryRepository(
         }
 
         var snapshotProblemsPath = Path.Combine(snapshotRoot, "problems");
-        if (!Directory.Exists(snapshotProblemsPath))
+        if (Directory.Exists(snapshotProblemsPath))
+        {
+            foreach (var problemPath in Directory.EnumerateFiles(snapshotProblemsPath, "*.json"))
+            {
+                var problem = await ReadProblemJsonAsync(problemPath, cancellationToken);
+                EnsureFileNameMatchesId(problemPath, problem.Id, "проблемы");
+            }
+        }
+
+        var snapshotShoppingPath = Path.Combine(snapshotRoot, "shopping");
+        if (!Directory.Exists(snapshotShoppingPath))
         {
             return;
         }
 
-        foreach (var problemPath in Directory.EnumerateFiles(snapshotProblemsPath, "*.json"))
+        foreach (var recordPath in Directory.EnumerateFiles(snapshotShoppingPath, "*.json"))
         {
-            var problem = await ReadProblemJsonAsync(problemPath, cancellationToken);
-            EnsureFileNameMatchesId(problemPath, problem.Id, "проблемы");
+            var shoppingItem = await ReadShoppingJsonAsync(recordPath, cancellationToken);
+            EnsureFileNameMatchesId(recordPath, shoppingItem.Id, "покупки");
+            EnsureFileNameMatchesId(recordPath, shoppingItem.ItemId, "покупки");
         }
     }
 
@@ -420,7 +479,8 @@ public sealed class FileInventoryRepository(
 
         return IsEntityJsonPath(relativePath, "items/") ||
                IsEntityJsonPath(relativePath, "packages/") ||
-               IsEntityJsonPath(relativePath, "problems/");
+               IsEntityJsonPath(relativePath, "problems/") ||
+               IsEntityJsonPath(relativePath, "shopping/");
     }
 
     private static bool IsEntityJsonPath(string relativePath, string prefix)
@@ -450,6 +510,23 @@ public sealed class FileInventoryRepository(
         }
 
         return problem;
+    }
+
+    private static async Task<ShoppingItem> ReadShoppingJsonAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var shoppingItem = await ReadJsonAsync<ShoppingItem>(path, cancellationToken);
+        try
+        {
+            shoppingItem.EnsureValid();
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InvalidDataException($"Нарушены инварианты данных: {path}", exception);
+        }
+
+        return shoppingItem;
     }
 
     private static async Task<T> ReadJsonAsync<T>(

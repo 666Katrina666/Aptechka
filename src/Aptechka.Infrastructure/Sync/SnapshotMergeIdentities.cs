@@ -83,4 +83,34 @@ internal static class SnapshotMergeIdentities
             throw new InvalidDataException($"Нельзя изменить id проблемы: {path}");
         }
     }
+
+    public static void EnsureShoppingIdentityImmutable(
+        string path,
+        ShoppingItem @base,
+        ShoppingItem? local,
+        ShoppingItem? remote)
+    {
+        EnsureUnchanged(path, @base.Id, local?.Id, remote?.Id, "id");
+        EnsureUnchanged(path, @base.ItemId, local?.ItemId, remote?.ItemId, "itemId");
+    }
+
+    private static void EnsureUnchanged(
+        string path,
+        string @base,
+        string? local,
+        string? remote,
+        string field)
+    {
+        if (local is not null &&
+            !string.Equals(local, @base, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Нельзя изменить {field} отметки покупки: {path}");
+        }
+
+        if (remote is not null &&
+            !string.Equals(remote, @base, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"Нельзя изменить {field} отметки покупки: {path}");
+        }
+    }
 }

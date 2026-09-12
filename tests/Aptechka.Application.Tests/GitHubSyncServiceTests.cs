@@ -100,6 +100,31 @@ public sealed class GitHubSyncServiceTests
     }
 
     [Fact]
+    public async Task Sync_KeepsShoppingWhenMergingAndPushing()
+    {
+        var item = Item(ItemId, "Ибупрофен");
+        var package = Package(PackageId, ItemId);
+        var shopping = ShoppingItem.Create(ItemId, T0, true, "аптека");
+        var localItem = Rename(item, "Нурофен", T1);
+        var @base = Snap(File(Manifest()), File(item), File(package), File(shopping));
+        var local = Snap(File(Manifest()), File(localItem), File(package), File(shopping));
+        await using var harness = await Harness.CreateAsync(@base, local, Remote("sha-0", @base));
+
+        var result = await harness.Sync();
+        var expected = Merge(@base, local, @base);
+
+        Assert.Equal(SyncOutcome.Pushed, result.Outcome);
+        Assert.True(expected.Files.ContainsKey($"items/{ItemId}.json"));
+        Assert.True(expected.Files.ContainsKey($"packages/{PackageId}.json"));
+        Assert.True(expected.Files.ContainsKey($"shopping/{ItemId}.json"));
+        Assert.True(harness.GitHub.Committed[0].HasSameFiles(expected));
+        Assert.True((await harness.Repository.ReadAsync()).HasSameFiles(expected));
+        Assert.True(ReadShopping(expected, ItemId).IsRequested);
+        Assert.Equal("аптека", ReadShopping(expected, ItemId).Note);
+        await AssertStateAsync(harness, "commit-1", expected);
+    }
+
+    [Fact]
     public async Task Sync_PullsWhenMergedEqualsRemoteWithoutCommit()
     {
         var item = Item(ItemId, "Ибупрофен");
@@ -854,6 +879,9 @@ public sealed class GitHubSyncServiceTests
     private static Package ReadPackage(DataSnapshot snapshot, string id) =>
         JsonSerializer.Deserialize<Package>(snapshot.Files[$"packages/{id}.json"], AptechkaJson.Options)!;
 
+    private static ShoppingItem ReadShopping(DataSnapshot snapshot, string id) =>
+        JsonSerializer.Deserialize<ShoppingItem>(snapshot.Files[$"shopping/{id}.json"], AptechkaJson.Options)!;
+
     private static InventoryItem Item(
         string id,
         string name,
@@ -919,6 +947,8 @@ public sealed class GitHubSyncServiceTests
     private static (string Path, byte[] Content) File(InventoryItem item) => ($"items/{item.Id}.json", Bytes(item));
 
     private static (string Path, byte[] Content) File(Package package) => ($"packages/{package.Id}.json", Bytes(package));
+
+    private static (string Path, byte[] Content) File(ShoppingItem shopping) => ($"shopping/{shopping.ItemId}.json", Bytes(shopping));
 
     private static (string Path, byte[] Content) File(DatasetManifest manifest) => ("aptechka.json", Bytes(manifest));
 
