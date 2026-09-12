@@ -41,15 +41,34 @@ function Get-Tool([string]$name, [string[]]$candidates) {
     return $null
 }
 
+function Get-ToolVersion([string]$toolPath, [string]$argument = '-v') {
+    $raw = (& $toolPath $argument 2>&1 | Out-String).Trim()
+    if ($raw -notmatch '(?<version>\d+\.\d+\.\d+)') {
+        throw "Could not parse a version from '$toolPath $argument': $raw"
+    }
+
+    return [version]$Matches.version
+}
+
+function Test-NodeEngineRange([version]$version) {
+    ($version.Major -eq 20 -and $version -ge [version]'20.19.0') -or
+    ($version.Major -eq 22 -and $version -ge [version]'22.12.0') -or
+    ($version.Major -ge 24)
+}
+
 function Assert-NodeVersion([string]$nodePath) {
-    $raw = (& $nodePath -v).Trim().TrimStart('v')
-    $version = [version]$raw
-    $minimum = [version]'20.19.0'
-    if ($version -lt $minimum) {
-        throw @"
-Appium 3 requires Node.js $minimum or newer. Found v$raw.
-Install Node.js 20.19+ (or 22 LTS) and reopen the terminal.
-"@
+    $version = Get-ToolVersion $nodePath
+    $required = '^20.19.0 || ^22.12.0 || >=24.0.0'
+    if (-not (Test-NodeEngineRange $version)) {
+        throw "Node.js v$version is not supported. Required: $required."
+    }
+}
+
+function Assert-NpmVersion([string]$npmPath) {
+    $version = Get-ToolVersion $npmPath
+    $required = '>=10'
+    if ($version.Major -lt 10) {
+        throw "npm $version is not supported. Required: $required."
     }
 }
 
@@ -124,13 +143,15 @@ try {
     Write-Step 'Checking tools'
     $dotnet = Get-Tool 'dotnet' @()
     $node = Get-Tool 'node' @()
-    $npm = Get-Tool 'npm' @()
     if (-not $dotnet) { throw 'dotnet was not found on PATH.' }
-    if (-not $node) { throw 'node was not found on PATH. Install Node.js 20.19+.' }
-    if (-not $npm) { throw 'npm was not found on PATH. Install npm 10+ with Node.js.' }
+    if (-not $node) { throw 'node was not found on PATH. Required: ^20.19.0 || ^22.12.0 || >=24.0.0.' }
+    Assert-NodeVersion $node
+
+    $npm = Get-Tool 'npm' @()
+    if (-not $npm) { throw 'npm was not found on PATH. Required: >=10.' }
+    Assert-NpmVersion $npm
     $npx = Get-Tool 'npx' @(Join-Path (Split-Path $npm) 'npx.cmd')
     if (-not $npx) { throw 'npx was not found on PATH.' }
-    Assert-NodeVersion $node
 
     if (-not $env:ANDROID_HOME -and (Test-Path 'C:\Program Files (x86)\Android\android-sdk')) {
         $env:ANDROID_HOME = 'C:\Program Files (x86)\Android\android-sdk'
@@ -160,6 +181,10 @@ try {
         Select-Object -First 1
     if (-not $aapt) {
         throw "aapt.exe was not found under '$($env:ANDROID_HOME)\build-tools'. Install Android SDK build-tools."
+    }
+
+    if (Test-TcpPort 4723) {
+        throw 'Appium port 4723 is already in use. Stop the other Appium server; this runner will not kill it.'
     }
 
     Write-Step 'Checking project-local Appium'
@@ -287,10 +312,6 @@ Re-run with -DeviceId <adb-id>. The script will not install or clear anything un
     & $adb -s $DeviceId install -r $apkPath
     if ($LASTEXITCODE -ne 0) {
         throw "adb install -r of the E2E APK failed with exit code $LASTEXITCODE."
-    }
-
-    if (Test-TcpPort 4723) {
-        throw 'Appium port 4723 is already in use. Stop the other Appium server; this runner will not kill it.'
     }
 
     Write-Step 'Starting project-local Appium'
