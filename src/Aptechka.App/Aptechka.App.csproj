@@ -19,11 +19,15 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 
-		<!-- Display name -->
-		<ApplicationTitle>Аптечка</ApplicationTitle>
-
 		<!-- App Identifier -->
 		<ApplicationId>io.github.vakineti.aptechka</ApplicationId>
+		<ApplicationTitle>Аптечка</ApplicationTitle>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(E2E)' == 'true'">
+		<ApplicationId>io.github.vakineti.aptechka.e2e</ApplicationId>
+		<ApplicationTitle>Аптечка E2E</ApplicationTitle>
+	</PropertyGroup>
+	<PropertyGroup>
 
 		<!-- Versions -->
 		<ApplicationDisplayVersion>1.6.0</ApplicationDisplayVersion>

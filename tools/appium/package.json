@@ -1,0 +1,13 @@
+{
+  "name": "aptechka-android-e2e-appium",
+  "private": true,
+  "description": "Project-local Appium 3 and UiAutomator2 driver for Aptechka Android E2E.",
+  "engines": {
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0",
+    "npm": ">=10"
+  },
+  "dependencies": {
+    "appium": "3.7.0",
+    "appium-uiautomator2-driver": "8.1.1"
+  }
+}

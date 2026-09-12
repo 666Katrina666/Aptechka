@@ -5,26 +5,28 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
     xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
     x:DataType="viewModels:ShoppingViewModel"
+    AutomationId="Shopping.Page"
     Title="{Binding Title}">
 
     <ContentPage.ToolbarItems>
-        <ToolbarItem Clicked="OnAddOrCancelClicked" Text="Добавить" />
+        <ToolbarItem AutomationId="Shopping.Add" Clicked="OnAddOrCancelClicked" Order="Primary" Text="Добавить" />
     </ContentPage.ToolbarItems>
 
-    <Grid Padding="16" RowDefinitions="Auto,*,Auto" RowSpacing="12">
+    <Grid AutomationId="Shopping.Page" Padding="16" RowDefinitions="Auto,*,Auto" RowSpacing="12">
         <Label
             IsVisible="{Binding HasError}"
             Text="{Binding ErrorMessage}"
             TextColor="#B3261E" />
 
         <Grid Grid.Row="1" IsVisible="{Binding IsBrowsing}" RowDefinitions="Auto,*" RowSpacing="12">
-            <SearchBar Placeholder="Название, форма, дозировка или заметка" Text="{Binding SearchQuery}" />
+            <SearchBar AutomationId="Shopping.Search" Placeholder="Название, форма, дозировка или заметка" Text="{Binding SearchQuery}" />
             <Grid Grid.Row="1" RowDefinitions="*,Auto,*" RowSpacing="8">
                 <Grid RowDefinitions="Auto,*" RowSpacing="4">
                     <Label FontAttributes="Bold" FontSize="16" Text="Нужно купить" />
                     <Grid Grid.Row="1">
                         <CollectionView
                             x:Name="ActiveList"
+                            AutomationId="Shopping.Active"
                             ItemsSource="{Binding Active}"
                             SelectionChanged="OnActiveSelectionChanged"
                             SelectionMode="Single">
@@ -63,6 +65,7 @@
                             </CollectionView.ItemTemplate>
                         </CollectionView>
                         <Label
+                            AutomationId="Shopping.ActiveEmpty"
                             HorizontalOptions="Center"
                             HorizontalTextAlignment="Center"
                             IsVisible="{Binding IsActiveEmpty}"
@@ -80,6 +83,7 @@
                     <Grid Grid.Row="1">
                         <CollectionView
                             x:Name="RecentList"
+                            AutomationId="Shopping.Recent"
                             ItemsSource="{Binding RecentlyClosed}"
                             SelectionChanged="OnRecentSelectionChanged"
                             SelectionMode="Single">
@@ -108,6 +112,7 @@
                             </CollectionView.ItemTemplate>
                         </CollectionView>
                         <Label
+                            AutomationId="Shopping.RecentEmpty"
                             HorizontalOptions="Center"
                             HorizontalTextAlignment="Center"
                             IsVisible="{Binding IsRecentEmpty}"
@@ -121,10 +126,11 @@
         </Grid>
 
         <Grid Grid.Row="1" IsVisible="{Binding IsAdding}" RowDefinitions="Auto,*" RowSpacing="12">
-            <SearchBar Placeholder="Название, форма или дозировка" Text="{Binding CandidateSearchQuery}" />
+            <SearchBar AutomationId="Shopping.CandidateSearch" Placeholder="Название, форма или дозировка" Text="{Binding CandidateSearchQuery}" />
             <Grid Grid.Row="1">
                 <CollectionView
                     x:Name="CandidateList"
+                    AutomationId="Shopping.Candidates"
                     ItemsSource="{Binding Candidates}"
                     SelectionChanged="OnCandidateSelectionChanged"
                     SelectionMode="Single">
@@ -147,6 +153,7 @@
                     </CollectionView.ItemTemplate>
                 </CollectionView>
                 <Label
+                    AutomationId="Shopping.CandidatesEmpty"
                     HorizontalOptions="Center"
                     HorizontalTextAlignment="Center"
                     IsVisible="{Binding IsCandidatesEmpty}"

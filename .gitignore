@@ -11,6 +11,10 @@ artifacts/
 .DS_Store
 Thumbs.db
 
+# Project-local Appium runtime (keep package.json and package-lock.json)
+tools/appium/node_modules/
+tools/appium/.appium-home/
+
 # Local application state and credentials
 .aptechka-local/
 *.secrets.json

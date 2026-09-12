@@ -5,15 +5,16 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
     xmlns:viewModels="clr-namespace:Aptechka.App.ViewModels"
     x:DataType="viewModels:MainViewModel"
+    AutomationId="Main.Page"
     Title="Аптечка">
 
     <ContentPage.ToolbarItems>
-        <ToolbarItem Clicked="OnShoppingClicked" Text="Покупки" />
+        <ToolbarItem AutomationId="Main.Shopping" Clicked="OnShoppingClicked" Order="Primary" Text="Покупки" />
         <ToolbarItem Clicked="OnProblemsClicked" Text="Проблемы" />
-        <ToolbarItem Clicked="OnAddClicked" Text="Добавить" />
+        <ToolbarItem AutomationId="Main.Add" Clicked="OnAddClicked" Order="Primary" Text="Добавить" />
     </ContentPage.ToolbarItems>
 
-    <Grid Padding="16" RowDefinitions="Auto,*,Auto" RowSpacing="12">
+    <Grid AutomationId="Main.Page" Padding="16" RowDefinitions="Auto,*,Auto" RowSpacing="12">
         <SearchBar
             Placeholder="Название, алиас или вещество"
             Text="{Binding SearchQuery}" />
