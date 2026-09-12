@@ -47,6 +47,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PackageService>();
         builder.Services.AddSingleton<ProblemService>();
         builder.Services.AddSingleton<ShoppingService>();
+        builder.Services.AddSingleton<ShoppingListService>();
         builder.Services.AddSingleton(new HttpClient
         {
             BaseAddress = new Uri("https://api.github.com/"),
