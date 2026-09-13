@@ -5,7 +5,7 @@ using Xunit.Sdk;
 namespace Aptechka.Android.E2E.Tests;
 
 [CollectionDefinition("AndroidE2E", DisableParallelization = true)]
-public sealed class AndroidE2ECollection : ICollectionFixture<AndroidSession>
+public sealed class AndroidE2ECollection
 {
 }
 

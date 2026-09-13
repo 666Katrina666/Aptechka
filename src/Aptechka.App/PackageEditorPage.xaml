@@ -7,7 +7,7 @@
     x:DataType="viewModels:PackageEditorViewModel"
     Title="{Binding Title}">
 
-    <ScrollView>
+    <ScrollView AutomationId="PackageEditor.Page">
         <VerticalStackLayout Padding="16" Spacing="12" MaximumWidthRequest="720">
             <Label
                 IsVisible="{Binding HasError}"
@@ -15,7 +15,7 @@
                 TextColor="#B3261E" />
 
             <Label Style="{StaticResource Body}" Text="Подпись" />
-            <Entry Placeholder="Необязательно, например блистер" Text="{Binding Label}" />
+            <Entry AutomationId="PackageEditor.Label" Placeholder="Необязательно, например блистер" Text="{Binding Label}" />
 
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                 <Label Grid.Column="0" VerticalOptions="Center" Text="Указать срок годности" />
@@ -52,7 +52,7 @@
                 Text="{Binding ShelfLifeText}" />
 
             <Label Style="{StaticResource Body}" Text="Состояние запаса" />
-            <Picker ItemsSource="{Binding StockOptions}" SelectedItem="{Binding SelectedStock}" />
+            <Picker AutomationId="PackageEditor.Stock" ItemsSource="{Binding StockOptions}" SelectedItem="{Binding SelectedStock}" />
 
             <Label Style="{StaticResource Body}" Text="Заметка" />
             <Editor
@@ -61,7 +61,7 @@
                 Placeholder="Необязательная заметка об упаковке"
                 Text="{Binding Note}" />
 
-            <Button Command="{Binding SaveCommand}" Text="Сохранить" />
+            <Button AutomationId="PackageEditor.Save" Command="{Binding SaveCommand}" Text="Сохранить" />
             <Button
                 BackgroundColor="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray600}}"
                 Clicked="OnArchiveClicked"

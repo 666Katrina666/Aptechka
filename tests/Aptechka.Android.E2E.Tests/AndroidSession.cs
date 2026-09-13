@@ -16,6 +16,15 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
             return;
         }
 
+        if (string.Equals(
+                E2ESettings.E2EPackageId,
+                E2ESettings.ProductionPackageId,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Refusing to start an Appium session: E2E package id matches production.");
+        }
+
         var apk = E2ESettings.ApkPath;
         if (!File.Exists(apk))
         {
@@ -31,11 +40,13 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
         options.AddAdditionalAppiumOption("udid", E2ESettings.DeviceId);
         options.AddAdditionalAppiumOption("appPackage", E2ESettings.E2EPackageId);
         options.AddAdditionalAppiumOption("autoGrantPermissions", true);
-        options.AddAdditionalAppiumOption("noReset", true);
+        options.AddAdditionalAppiumOption("noReset", false);
+        options.AddAdditionalAppiumOption("skipUnlock", true);
         options.AddAdditionalAppiumOption("newCommandTimeout", 120);
 
         Driver = new AndroidDriver(E2ESettings.AppiumUrl, options, TimeSpan.FromSeconds(180));
         Driver.Manage().Timeouts().ImplicitWait = TimeSpan.Zero;
+        BringE2EAppToForeground();
         await Task.CompletedTask;
     }
 
@@ -221,6 +232,51 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
         return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
     }
 
+    public void SetChecked(string automationId, bool expected, string stage)
+    {
+        if (IsChecked(automationId, stage) == expected)
+        {
+            return;
+        }
+
+        ScrollTo(automationId, stage).Click();
+        var driver = RequireDriver();
+        var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(10));
+        try
+        {
+            wait.Until(_ => IsChecked(automationId, stage) == expected);
+        }
+        catch (WebDriverTimeoutException)
+        {
+            throw new InvalidOperationException(
+                $"Switch '{automationId}' during '{stage}' stayed {IsChecked(automationId, stage)}, expected {expected}.");
+        }
+    }
+
+    public void WaitPickerValue(string automationId, string expected, string stage)
+    {
+        var driver = RequireDriver();
+        var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(15));
+        try
+        {
+            wait.Until(_ =>
+            {
+                var picker = ScrollTo(automationId, stage);
+                if ((picker.Text ?? string.Empty).Contains(expected, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                return VisibleTexts(picker).Any(text => text.Contains(expected, StringComparison.Ordinal));
+            });
+        }
+        catch (WebDriverTimeoutException)
+        {
+            throw new InvalidOperationException(
+                $"Picker '{automationId}' during '{stage}' did not show '{expected}'.");
+        }
+    }
+
     public IReadOnlyList<string> VisibleTexts(AppiumElement root)
     {
         return root.FindElements(By.ClassName("android.widget.TextView"))
@@ -374,6 +430,26 @@ public sealed class AndroidSession : IAsyncLifetime, IDisposable
     {
         Quit();
         return Task.CompletedTask;
+    }
+
+    private void BringE2EAppToForeground()
+    {
+        const string stage = "session start";
+        try
+        {
+            RequireDriver().ExecuteScript(
+                "mobile: pressKey",
+                new Dictionary<string, object> { ["keycode"] = 224 });
+            RequireDriver().ExecuteScript(
+                "mobile: activateApp",
+                new Dictionary<string, object> { ["appId"] = E2ESettings.E2EPackageId });
+            WaitVisible(AutomationIds.MainPage, stage, TimeSpan.FromSeconds(60));
+        }
+        catch
+        {
+            SavePageSource(stage);
+            throw;
+        }
     }
 
     private AndroidDriver RequireDriver() =>

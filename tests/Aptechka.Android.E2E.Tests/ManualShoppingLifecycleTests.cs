@@ -1,7 +1,7 @@
 namespace Aptechka.Android.E2E.Tests;
 
 [Collection("AndroidE2E")]
-public sealed class ManualShoppingLifecycleTests
+public sealed class ManualShoppingLifecycleTests : IClassFixture<AndroidSession>
 {
     private const string ItemName = "E2E Ибупрофен";
     private const string ItemForm = "таблетки";

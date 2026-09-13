@@ -12,7 +12,7 @@ public sealed class AndroidE2EFactAttribute : FactAttribute
 }
 
 [Collection("AndroidE2E")]
-public sealed class LaunchAndNavigateToShoppingTests
+public sealed class LaunchAndNavigateToShoppingTests : IClassFixture<AndroidSession>
 {
     private readonly AndroidSession session;
 

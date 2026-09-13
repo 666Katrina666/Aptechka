@@ -34,6 +34,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-android-e2e.ps1
 
 `-NoBuild` пропускает сборку, `-KeepE2EData` не вызывает `pm clear` для E2E-пакета.
 
+Каждый E2E-класс поднимает свою Appium-сессию (`noReset=false`, без `fullReset`)
+и работает с чистым `io.github.vakineti.aptechka.e2e`. Классы не делят данные
+и не зависят от порядка выполнения.
+
 Логи и E2E APK: `artifacts/e2e/android/` (`appium.log`, `apk/`, trx).
 
 ### Типичные ошибки
@@ -59,6 +63,10 @@ and `appium driver install` are not used.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-android-e2e.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-android-e2e.ps1 -DeviceId <adb-id>
 ```
+
+Each E2E class starts its own Appium session (`noReset=false`, no `fullReset`)
+against a clean `io.github.vakineti.aptechka.e2e`. Classes do not share data
+and do not depend on execution order.
 
 Logs land in `artifacts/e2e/android/`. Typical failures: unauthorized adb, missing
 SDK, Node/npm outside the Appium 3 engine range, or port 4723 already taken by

@@ -57,6 +57,7 @@
                     Text="Упаковок пока нет"
                     TextColor="{AppThemeBinding Light={StaticResource Gray600}, Dark={StaticResource Gray300}}" />
                 <Button
+                    AutomationId="ItemEditor.AddPackage"
                     Clicked="OnAddPackageClicked"
                     IsEnabled="{Binding CanMutatePackages}"
                     Text="Добавить упаковку" />
@@ -64,7 +65,7 @@
                     <BindableLayout.ItemTemplate>
                         <DataTemplate x:DataType="viewModels:PackageListRow">
                             <Border Padding="12" Stroke="{AppThemeBinding Light={StaticResource Gray200}, Dark={StaticResource Gray500}}">
-                                <VerticalStackLayout Spacing="6">
+                                <VerticalStackLayout AutomationId="ItemEditor.PackageRow" Spacing="6">
                                     <VerticalStackLayout.GestureRecognizers>
                                         <TapGestureRecognizer Tapped="OnPackageTapped" />
                                     </VerticalStackLayout.GestureRecognizers>

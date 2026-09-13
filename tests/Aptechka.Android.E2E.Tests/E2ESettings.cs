@@ -24,6 +24,12 @@ internal static class AutomationIds
     public const string ItemEditorStrength = "ItemEditor.Strength";
     public const string ItemEditorKeepInStock = "ItemEditor.KeepInStock";
     public const string ItemEditorSave = "ItemEditor.Save";
+    public const string ItemEditorAddPackage = "ItemEditor.AddPackage";
+    public const string ItemEditorPackageRow = "ItemEditor.PackageRow";
+    public const string PackageEditorPage = "PackageEditor.Page";
+    public const string PackageEditorLabel = "PackageEditor.Label";
+    public const string PackageEditorStock = "PackageEditor.Stock";
+    public const string PackageEditorSave = "PackageEditor.Save";
 }
 
 internal static class E2ESettings
