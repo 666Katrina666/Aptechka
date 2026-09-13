@@ -28,14 +28,22 @@ public sealed record CatalogItemRow(
     public bool HasExpiredWarning => !string.IsNullOrEmpty(ExpiredWarning);
 }
 
+public sealed record AttentionRow(
+    string Id,
+    string Name,
+    string? Details,
+    IReadOnlyList<string> Reasons)
+{
+    public bool HasDetails => !string.IsNullOrEmpty(Details);
+}
+
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private const string OwnerPreference = "sync-owner";
     private const string RepositoryPreference = "sync-repository";
     private const string BranchPreference = "sync-branch";
 
-    private readonly InventoryService inventoryService;
-    private readonly PackageService packageService;
+    private readonly InventoryOverviewService overviewService;
     private readonly ISyncService syncService;
     private readonly ISyncStateInspector syncStateInspector;
     private readonly ISecureTokenStore tokenStore;
@@ -44,6 +52,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private int refreshEpoch;
     private string searchQuery = string.Empty;
     private IReadOnlyList<CatalogItemRow> items = [];
+    private IReadOnlyList<AttentionRow> attentionPreview = [];
+    private int attentionCount;
     private string owner;
     private string repository;
     private string branch;
@@ -60,26 +70,46 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private SyncFailureKind? lastFailure;
 
     public MainViewModel(
-        InventoryService inventoryService,
-        PackageService packageService,
+        InventoryOverviewService overviewService,
         ISyncService syncService,
         ISyncStateInspector syncStateInspector,
         ISecureTokenStore tokenStore,
         AutoSyncScheduler scheduler,
         AppSyncLifetime syncLifetime)
+        : this(
+            overviewService,
+            syncService,
+            syncStateInspector,
+            tokenStore,
+            scheduler,
+            syncLifetime,
+            Preferences.Default.Get(OwnerPreference, "666Katrina666"),
+            Preferences.Default.Get(RepositoryPreference, "aptechka-data"),
+            Preferences.Default.Get(BranchPreference, "main"))
     {
-        this.inventoryService = inventoryService;
-        this.packageService = packageService;
+    }
+
+    internal MainViewModel(
+        InventoryOverviewService overviewService,
+        ISyncService syncService,
+        ISyncStateInspector syncStateInspector,
+        ISecureTokenStore tokenStore,
+        AutoSyncScheduler scheduler,
+        AppSyncLifetime syncLifetime,
+        string owner,
+        string repository,
+        string branch)
+    {
+        this.overviewService = overviewService;
         this.syncService = syncService;
         this.syncStateInspector = syncStateInspector;
         this.tokenStore = tokenStore;
         this.scheduler = scheduler;
         this.syncLifetime = syncLifetime;
+        this.owner = owner;
+        this.repository = repository;
+        this.branch = branch;
         scheduler.BusyChanged += () => SetBusy(scheduler.IsInFlight);
-
-        owner = Preferences.Default.Get(OwnerPreference, "666Katrina666");
-        repository = Preferences.Default.Get(RepositoryPreference, "aptechka-data");
-        branch = Preferences.Default.Get(BranchPreference, "main");
 
         SyncCommand = new Command(async () => await SyncAsync(), () => !IsBusy);
         ToggleGitHubSettingsCommand = new Command(ToggleGitHubSettings);
@@ -110,26 +140,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public IReadOnlyList<CatalogItemRow> Items
-    {
-        get => items;
-        private set
-        {
-            if (!SetField(ref items, value))
-            {
-                return;
-            }
-
-            OnPropertyChanged(nameof(IsEmpty));
-            OnPropertyChanged(nameof(EmptyMessage));
-        }
-    }
+    public IReadOnlyList<CatalogItemRow> Items => items;
 
     public bool IsEmpty => Items.Count == 0;
 
     public string EmptyMessage => string.IsNullOrWhiteSpace(SearchQuery)
         ? "Позиций пока нет. Нажми «Добавить», чтобы создать первую."
         : "Ничего не найдено.";
+
+    public IReadOnlyList<AttentionRow> AttentionPreview => attentionPreview;
+
+    public int AttentionCount => attentionCount;
+
+    public bool HasAttention => AttentionCount > 0;
+
+    public string AttentionTitle => $"Требует внимания · {AttentionCount}";
+
+    public bool HasMoreAttention => AttentionCount > 3;
+
+    public string AttentionMoreText => $"Ещё {Math.Max(AttentionCount - 3, 0)} в каталоге";
 
     public string Owner
     {
@@ -306,37 +335,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var epoch = Interlocked.Increment(ref refreshEpoch);
         try
         {
-            var catalog = await inventoryService.SearchAsync(SearchQuery);
-            if (epoch != refreshEpoch)
+            var overview = await overviewService.GetAsync(SearchQuery);
+            if (epoch != Volatile.Read(ref refreshEpoch))
             {
                 return;
             }
 
-            var rows = new List<CatalogItemRow>(catalog.Count);
-            foreach (var item in catalog)
-            {
-                ItemStockSummary? summary = null;
-                try
-                {
-                    summary = await packageService.GetItemStockSummaryAsync(item.Id);
-                }
-                catch
-                {
-                }
-
-                if (epoch != refreshEpoch)
-                {
-                    return;
-                }
-
-                rows.Add(ToRow(item, summary));
-            }
-
-            Items = rows;
+            ApplyOverview(overview);
         }
         catch (Exception)
         {
-            if (epoch != refreshEpoch || pinSessionStatus)
+            if (epoch != Volatile.Read(ref refreshEpoch) || pinSessionStatus)
             {
                 return;
             }
@@ -564,6 +573,70 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(IsSyncing));
         OnPropertyChanged(nameof(IsConflict));
         OnPropertyChanged(nameof(IsError));
+    }
+
+    private void ApplyOverview(InventoryOverview overview)
+    {
+        items = overview.Catalog.Select(static entry => ToRow(entry.Item, entry.Summary)).ToArray();
+        attentionPreview = overview.Attention.Take(3).Select(ToAttentionRow).ToArray();
+        attentionCount = overview.Attention.Count;
+        OnPropertyChanged(nameof(Items));
+        OnPropertyChanged(nameof(IsEmpty));
+        OnPropertyChanged(nameof(EmptyMessage));
+        OnPropertyChanged(nameof(AttentionPreview));
+        OnPropertyChanged(nameof(AttentionCount));
+        OnPropertyChanged(nameof(HasAttention));
+        OnPropertyChanged(nameof(AttentionTitle));
+        OnPropertyChanged(nameof(HasMoreAttention));
+        OnPropertyChanged(nameof(AttentionMoreText));
+    }
+
+    private static AttentionRow ToAttentionRow(AttentionEntry entry)
+    {
+        var details = string.Join(
+            ", ",
+            new[] { entry.Form, entry.Strength }.Where(static value => !string.IsNullOrEmpty(value)));
+        return new AttentionRow(
+            entry.ItemId,
+            entry.Name,
+            string.IsNullOrEmpty(details) ? null : details,
+            Reasons(entry));
+    }
+
+    private static IReadOnlyList<string> Reasons(AttentionEntry entry)
+    {
+        var reasons = new List<string>(4);
+        if (PackageText.ExpiredWarning(entry.ExpiredPackageCount) is { } expired)
+        {
+            reasons.Add(expired);
+        }
+
+        if (entry.HasKeepInStockMissing)
+        {
+            reasons.Add("Обязательный запас закончился");
+        }
+
+        if (entry.ExpirationWindow is { } window && entry.NearestExpirationDate is { } date)
+        {
+            var days = window switch
+            {
+                ExpirationAttentionWindow.Within7 => 7,
+                ExpirationAttentionWindow.Within30 => 30,
+                ExpirationAttentionWindow.Within90 => 90,
+                _ => (int?)null,
+            };
+            if (days is { } value)
+            {
+                reasons.Add($"Срок в ближайшие {value} дней · до {PackageText.FormatDate(date)}");
+            }
+        }
+
+        if (entry.HasLowStock)
+        {
+            reasons.Add("Запас скоро закончится");
+        }
+
+        return reasons;
     }
 
     private static CatalogItemRow ToRow(InventoryItem item, ItemStockSummary? summary)

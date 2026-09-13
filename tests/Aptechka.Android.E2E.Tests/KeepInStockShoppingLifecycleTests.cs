@@ -42,6 +42,11 @@ public sealed class KeepInStockShoppingLifecycleTests : IClassFixture<AndroidSes
             session.WaitVisible(AutomationIds.MainPage, stage);
             session.WaitGone(AutomationIds.ItemEditorPage, stage);
 
+            stage = "attention after keepInStock missing";
+            session.WaitVisible(AutomationIds.MainAttention, stage);
+            var attention = session.WaitSingleVisible(AutomationIds.MainAttentionRow, stage);
+            session.AssertRowContains(attention, stage, ItemName, "Обязательный запас закончился");
+
             stage = "automatic shopping row";
             session.WaitVisible(AutomationIds.MainShopping, stage).Click();
             session.WaitVisible(AutomationIds.ShoppingPage, stage);
@@ -106,6 +111,8 @@ public sealed class KeepInStockShoppingLifecycleTests : IClassFixture<AndroidSes
             session.PressSystemBack();
             session.WaitVisible(AutomationIds.MainPage, stage);
             session.WaitGone(AutomationIds.ShoppingPage, stage);
+            session.WaitGone(AutomationIds.MainAttentionRow, stage);
+            session.WaitGone(AutomationIds.MainAttention, stage);
         }
         catch
         {

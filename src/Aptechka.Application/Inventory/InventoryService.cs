@@ -25,15 +25,9 @@ public sealed class InventoryService(
         CancellationToken cancellationToken = default)
     {
         var items = await repository.GetItemsAsync(cancellationToken);
-        IEnumerable<InventoryItem> matches = items.Where(static item => item.DeletedAt is null);
-
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            var term = query.Trim();
-            matches = matches.Where(item => Matches(item, term));
-        }
-
-        return matches
+        return items
+            .Where(static item => item.DeletedAt is null)
+            .Where(item => InventorySearch.Matches(item, query))
             .OrderBy(static item => item.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -127,12 +121,6 @@ public sealed class InventoryService(
         var item = await GetItemAsync(id, cancellationToken);
         return item ?? throw new InvalidOperationException("Позиция не найдена.");
     }
-
-    private static bool Matches(InventoryItem item, string term) =>
-        item.Name.Contains(term, StringComparison.OrdinalIgnoreCase) ||
-        item.Aliases.Any(alias => alias.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
-        item.ActiveIngredients.Any(ingredient =>
-            ingredient.Contains(term, StringComparison.OrdinalIgnoreCase));
 
     private static bool HasNameConflict(InventoryItem item, string term) =>
         string.Equals(item.Name, term, StringComparison.OrdinalIgnoreCase) ||

@@ -62,6 +62,14 @@ public partial class MainPage : ContentPage
         await Navigation.PushAsync(services.GetRequiredService<ProblemsPage>());
     }
 
+    private async void OnAttentionTapped(object? sender, TappedEventArgs e)
+    {
+        if ((sender as BindableObject)?.BindingContext is AttentionRow row)
+        {
+            await OpenEditorAsync(row.Id);
+        }
+    }
+
     private async void OnAddClicked(object? sender, EventArgs e)
     {
         if (viewModel.IsBusy)

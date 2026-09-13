@@ -5,6 +5,9 @@ internal static class AutomationIds
     public const string MainPage = "Main.Page";
     public const string MainShopping = "Main.Shopping";
     public const string MainAdd = "Main.Add";
+    public const string MainAttention = "Main.Attention";
+    public const string MainAttentionRow = "Main.AttentionRow";
+    public const string MainAttentionMore = "Main.AttentionMore";
     public const string ShoppingPage = "Shopping.Page";
     public const string ShoppingAdd = "Shopping.Add";
     public const string ShoppingSearch = "Shopping.Search";

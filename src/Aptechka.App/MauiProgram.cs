@@ -45,6 +45,7 @@ public static class MauiProgram
             services.GetRequiredService<FileInventoryRepository>());
         builder.Services.AddSingleton<InventoryService>();
         builder.Services.AddSingleton<PackageService>();
+        builder.Services.AddSingleton<InventoryOverviewService>();
         builder.Services.AddSingleton<ProblemService>();
         builder.Services.AddSingleton<ShoppingService>();
         builder.Services.AddSingleton<ShoppingListService>();
